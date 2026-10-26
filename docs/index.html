@@ -1077,6 +1077,14 @@ echo("Provider Status: " + string(health.status) + " (" + string(health.latency_
           </thead>
           <tbody>
             <tr>
+              <td><code>auto/free</code></td>
+              <td>JarvisClaw Auto Free (Live Anonymous)</td>
+              <td><span class="chip chip-free">FREE</span></td>
+              <td>chat, vision, reasoning</td>
+              <td>128,000</td>
+              <td>$0.00 / $0.00 (No Key)</td>
+            </tr>
+            <tr>
               <td><code>kilo-auto/free</code></td>
               <td>Kilo Auto Free Router</td>
               <td><span class="chip chip-free">FREE</span></td>
@@ -1107,6 +1115,54 @@ echo("Provider Status: " + string(health.status) + " (" + string(health.latency_
               <td>coding, reasoning</td>
               <td>1,048,576</td>
               <td>$0.00 / $0.00</td>
+            </tr>
+            <tr>
+              <td><code>DeepSeek-V4.1-Flash</code></td>
+              <td>DeepSeek V4.1 Flash (1M Reasoning)</td>
+              <td><span class="chip chip-paid">LLM7 PRO</span></td>
+              <td>chat, reasoning, tools</td>
+              <td>1,000,000</td>
+              <td>$0.30 / $1.20</td>
+            </tr>
+            <tr>
+              <td><code>L3-8B-Lunaris-v1-Turbo</code></td>
+              <td>Lunaris V1 Turbo (Fast Inference)</td>
+              <td><span class="chip chip-paid">LLM7 PRO</span></td>
+              <td>chat, fast-inference</td>
+              <td>128,000</td>
+              <td>$0.04 / $0.05</td>
+            </tr>
+            <tr>
+              <td><code>codestral-latest</code></td>
+              <td>Codestral Latest (Turbo Coding)</td>
+              <td><span class="chip chip-paid">LLM7 TURBO</span></td>
+              <td>coding, chat</td>
+              <td>256,000</td>
+              <td>$0.01 / $0.02</td>
+            </tr>
+            <tr>
+              <td><code>anthropic/claude-opus-4-8</code></td>
+              <td>Claude Opus 4.8 Flagship</td>
+              <td><span class="chip chip-paid">LLM7 PRO</span></td>
+              <td>reasoning, agentic, chat</td>
+              <td>200,000</td>
+              <td>$3.00 / $15.00</td>
+            </tr>
+            <tr>
+              <td><code>seedance-2.0</code></td>
+              <td>Seedance 2.0 (Video Generation)</td>
+              <td><span class="chip chip-paid">LLM7 VIDEO</span></td>
+              <td>video-generation, multimodal</td>
+              <td>—</td>
+              <td>Per video billing</td>
+            </tr>
+            <tr>
+              <td><code>whisper-large-v3</code></td>
+              <td>Whisper Large V3 (Audio STT)</td>
+              <td><span class="chip chip-paid">LLM7 AUDIO</span></td>
+              <td>audio-transcription, speech</td>
+              <td>—</td>
+              <td>Per minute billing</td>
             </tr>
             <tr>
               <td><code>nvidia/gpt-oss-20b</code></td>
@@ -1382,6 +1438,33 @@ let mgr = crawler.init_provider_manager({
 })
 \`\`\`
 BlockRun is configured as the default provider with automatic model catalog discovery.`,
+
+      llm7: `To configure LLM7 AI Gateway (https://api.llm7.io/v1) with 68 models:
+\`\`\`mozhi
+import crawler
+
+let mgr = crawler.init_provider_manager({
+    default_provider: "llm7",
+    free_only: false,
+    providers: [{
+        id: "llm7",
+        name: "LLM7 AI Gateway",
+        base_url: "https://api.llm7.io/v1",
+        api_format: "openai",
+        api_key_env: "LLM7_API_KEY",
+        model_discovery: true,
+        enabled: true
+    }]
+})
+
+let res = crawler.call_chat_completion(mgr, "llm7", {
+    model: "DeepSeek-V4.1-Flash",
+    messages: [
+        { "role": "user", "content": "Explain multi-agent architecture" }
+    ]
+})
+\`\`\`
+Supports DeepSeek-V4.1-Flash (1M tokens), Claude Opus 4.8, GPT-6 Astra, Codestral, Voxtral, and Seedance.`,
 
       agents: `Mozhi Crawler features 6 specialized research agents:
 1. **Query Planner**: Analyzes the query, establishes target facts, and generates search criteria.

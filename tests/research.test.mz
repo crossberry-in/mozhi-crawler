@@ -342,6 +342,71 @@ let kilo_chat = c.call_chat_completion(kilo_mgr, "kilocode", {
 assert(kilo_chat.ok == true)
 echo("Kilo Code completion status: " + string(kilo_chat.ok))
 
+# ------------------------------------------------------------
+# 11. LLM7 AI Gateway Dynamic Discovery & Model Catalog
+# ------------------------------------------------------------
+echo("\n[Test 11/11] LLM7 AI Gateway Dynamic Discovery & Catalog...")
+
+let llm7_mgr = c.init_provider_manager({
+    default_provider: "llm7",
+    free_only: false,
+    providers: [
+        {
+            id: "llm7",
+            name: "LLM7 AI Gateway",
+            base_url: "https://api.llm7.io/v1",
+            api_format: "openai",
+            api_key_env: "LLM7_API_KEY",
+            model_discovery: true,
+            enabled: true
+        }
+    ]
+})
+
+assert(llm7_mgr.default_provider == "llm7")
+assert(llm7_mgr.providers.len() == 1)
+
+# Run model discovery on LLM7
+let llm7_models = c.discover_models(llm7_mgr, "llm7", null)
+assert(llm7_models.len() == 68)
+echo("Discovered LLM7 models count: " + string(llm7_models.len()))
+
+# Find DeepSeek-V4.1-Flash and codestral-latest
+let ds_model = null
+let codestral_model = null
+for m in llm7_models {
+    if m.id == "DeepSeek-V4.1-Flash" {
+        ds_model = m
+    }
+    if m.id == "codestral-latest" {
+        codestral_model = m
+    }
+}
+
+assert(ds_model != null)
+assert(ds_model.context_window == 1000000)
+assert(ds_model.tier == "pro")
+
+# Verify reasoning capability was added to categories
+let ds_has_reasoning = false
+for cat in ds_model.categories {
+    if cat == "reasoning" {
+        ds_has_reasoning = true
+    }
+}
+assert(ds_has_reasoning == true)
+echo("DeepSeek-V4.1-Flash: 1M context, pro tier, reasoning category: PASS")
+
+assert(codestral_model != null)
+assert(codestral_model.tier == "turbo")
+echo("codestral-latest: turbo tier: PASS")
+
+# Select best model for long context
+let long_ctx_model = c.select_model_for_task(llm7_mgr, "llm7", "long_context", false)
+assert(long_ctx_model != null)
+assert(long_ctx_model.context_window >= 1000000)
+echo("Selected model for long_context: " + long_ctx_model.id + " (" + string(long_ctx_model.context_window) + " tokens)")
+
 echo("\n============================================================")
-echo("   ALL 10 TEST SECTIONS PASSED SUCCESSFULLY!                ")
+echo("   ALL 11 TEST SECTIONS PASSED SUCCESSFULLY!                ")
 echo("============================================================")

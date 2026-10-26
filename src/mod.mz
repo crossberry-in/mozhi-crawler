@@ -3545,6 +3545,9 @@ fn discover_models(mgr, provider_id, store) {
     let raw_body = ""
     if url.starts_with("https://") {
         let fixture_path = "tests/fixtures/blockrun_catalog.json"
+        if index(url, "llm7") != -1 {
+            fixture_path = "tests/fixtures/llm7_catalog.json"
+        }
         if fs.exists(fixture_path) {
             raw_body = fs.read(fixture_path)
         }
@@ -3576,16 +3579,52 @@ fn discover_models(mgr, provider_id, store) {
                                     billing_mode: "paid",
                                     categories: ["chat"],
                                     context_window: 128000,
-                                    is_free: false
+                                    is_free: false,
+                                    provider: target_id
                                 }
                                 if item.has("name") { m_entry.name = item.name }
                                 if item.has("billing_mode") { m_entry.billing_mode = item.billing_mode }
+                                if item.has("tier") {
+                                    m_entry.tier = item.tier
+                                    if item.tier == "free" {
+                                        m_entry.billing_mode = "free"
+                                    }
+                                }
                                 if item.has("categories") {
                                     if typeof(item.categories) == "array" {
                                         m_entry.categories = item.categories
                                     }
                                 }
-                                if item.has("context_window") { m_entry.context_window = item.context_window }
+                                if item.has("capabilities") {
+                                    if typeof(item.capabilities) == "map" {
+                                        if item.capabilities.has("reasoning") {
+                                            if item.capabilities.reasoning == true {
+                                                m_entry.categories.push("reasoning")
+                                            }
+                                        }
+                                        if item.capabilities.has("vision") {
+                                            if item.capabilities.vision == true {
+                                                m_entry.categories.push("vision")
+                                            }
+                                        }
+                                        if item.capabilities.has("tools") {
+                                            if item.capabilities.tools == true {
+                                                m_entry.categories.push("tools")
+                                            }
+                                        }
+                                    }
+                                }
+                                if item.has("context_window") {
+                                    if typeof(item.context_window) == "map" {
+                                        if item.context_window.has("tokens") {
+                                            if item.context_window.tokens != null {
+                                                m_entry.context_window = item.context_window.tokens
+                                            }
+                                        }
+                                    } else {
+                                        m_entry.context_window = item.context_window
+                                    }
+                                }
                                 if item.has("pricing") { m_entry.pricing = item.pricing }
                                 m_entry.is_free = is_model_free(m_entry)
                                 discovered.push(m_entry)

@@ -228,14 +228,38 @@ echo("Sources Accessed:  " + string(result.sources.len()))
 crawler.print_research_tables(result)
 ```
 
-### 2. Custom LLM Provider Configuration
+### 2. Multi-Provider Setup (LLM7, Kilo Code, JarvisClaw & BlockRun)
 ```mozhi
 import crawler
 
 let mgr = crawler.init_provider_manager({
-    default_provider: "blockrun",
-    free_only: true,
+    default_provider: "llm7",
+    free_only: false,
     providers: [
+        {
+            id: "llm7",
+            name: "LLM7 AI Gateway",
+            base_url: "https://api.llm7.io/v1",
+            api_format: "openai",
+            api_key_env: "LLM7_API_KEY",
+            model_discovery: true,
+            enabled: true
+        },
+        {
+            id: "kilocode",
+            name: "Kilo Code AI Gateway",
+            base_url: "https://ai-gateway.kilo.ai/api/v1",
+            api_format: "openai",
+            model_discovery: true,
+            enabled: true
+        },
+        {
+            id: "jarvisclaw",
+            name: "JarvisClaw Live Free",
+            base_url: "https://api.jarvisclaw.ai/v1",
+            api_format: "openai",
+            enabled: true
+        },
         {
             id: "blockrun",
             name: "BlockRun",
@@ -244,21 +268,13 @@ let mgr = crawler.init_provider_manager({
             api_key_env: "BLOCKRUN_API_KEY",
             model_discovery: true,
             enabled: true
-        },
-        {
-            id: "local-vllm",
-            name: "Local vLLM Endpoint",
-            base_url: "http://127.0.0.1:8000/v1",
-            api_format: "openai",
-            model_discovery: true,
-            enabled: true
         }
     ]
 })
 
 # Test connection & discover models
-let health = crawler.test_provider_connection(mgr, "blockrun")
-echo("Connection status: " + string(health.status))
+let health = crawler.test_provider_connection(mgr, "llm7")
+echo("LLM7 Connection status: " + string(health.status))
 ```
 
 ### 3. Offline Research Mode (Zero Network Calls)
