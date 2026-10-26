@@ -1077,6 +1077,46 @@ echo("Provider Status: " + string(health.status) + " (" + string(health.latency_
           </thead>
           <tbody>
             <tr>
+              <td><code>Meta-Llama-3_3-70B-Instruct</code></td>
+              <td>Meta Llama 3.3 70B (Kepler AI Zero-Auth)</td>
+              <td><span class="chip chip-free">FREE</span></td>
+              <td>chat, reasoning, general</td>
+              <td>131,072</td>
+              <td>$0.00 / $0.00 (Zero-Auth)</td>
+            </tr>
+            <tr>
+              <td><code>Mistral-Nemo-Instruct-2407</code></td>
+              <td>Mistral Nemo 12B (Kepler AI Zero-Auth)</td>
+              <td><span class="chip chip-free">FREE</span></td>
+              <td>chat, coding, reasoning</td>
+              <td>65,536</td>
+              <td>$0.00 / $0.00 (Zero-Auth)</td>
+            </tr>
+            <tr>
+              <td><code>Qwen2.5-VL-72B-Instruct</code></td>
+              <td>Qwen 2.5 Vision Language (Kepler AI)</td>
+              <td><span class="chip chip-free">FREE</span></td>
+              <td>vision, multimodal, chat</td>
+              <td>32,768</td>
+              <td>$0.00 / $0.00 (Zero-Auth)</td>
+            </tr>
+            <tr>
+              <td><code>Qwen3.5-397B-A17B</code></td>
+              <td>Qwen 3.5 MoE 397B (Kepler AI 262K)</td>
+              <td><span class="chip chip-free">FREE</span></td>
+              <td>reasoning, large-moe, chat</td>
+              <td>262,144</td>
+              <td>$0.00 / $0.00 (Zero-Auth)</td>
+            </tr>
+            <tr>
+              <td><code>Qwen3Guard-Gen-8B</code></td>
+              <td>Qwen 3 Guard Safety (Kepler AI)</td>
+              <td><span class="chip chip-free">FREE</span></td>
+              <td>safety, moderation</td>
+              <td>32,768</td>
+              <td>$0.00 / $0.00 (Zero-Auth)</td>
+            </tr>
+            <tr>
               <td><code>auto/free</code></td>
               <td>JarvisClaw Auto Free (Live Anonymous)</td>
               <td><span class="chip chip-free">FREE</span></td>
@@ -1465,6 +1505,30 @@ let res = crawler.call_chat_completion(mgr, "llm7", {
 })
 \`\`\`
 Supports DeepSeek-V4.1-Flash (1M tokens), Claude Opus 4.8, GPT-6 Astra, Codestral, Voxtral, and Seedance.`,
+
+      kepler: `To configure Kepler AI Cloud (OVHcloud) with zero-auth free models:
+\`\`\`mozhi
+import crawler
+
+let mgr = crawler.init_provider_manager({
+    default_provider: "kepler",
+    providers: [{
+        id: "kepler",
+        name: "Kepler AI Cloud (OVHcloud)",
+        base_url: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+        model_discovery: true,
+        enabled: true
+    }]
+})
+
+let res = crawler.call_chat_completion(mgr, "kepler", {
+    model: "Meta-Llama-3_3-70B-Instruct",
+    messages: [
+        { "role": "user", "content": "Explain research pipeline." }
+    ]
+})
+\`\`\`
+Supports Meta Llama 3.3 70B (131K), Qwen 2.5 VL 72B (Vision), Qwen 3.5 MoE 397B, Mistral Nemo, and Qwen3Guard.`,
 
       agents: `Mozhi Crawler features 6 specialized research agents:
 1. **Query Planner**: Analyzes the query, establishes target facts, and generates search criteria.

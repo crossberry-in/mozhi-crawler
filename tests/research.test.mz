@@ -407,6 +407,68 @@ assert(long_ctx_model != null)
 assert(long_ctx_model.context_window >= 1000000)
 echo("Selected model for long_context: " + long_ctx_model.id + " (" + string(long_ctx_model.context_window) + " tokens)")
 
+# ------------------------------------------------------------
+# 12. Kepler AI Cloud (OVHcloud) Zero-Auth Dynamic Discovery
+# ------------------------------------------------------------
+echo("\n[Test 12/12] Kepler AI Cloud (OVHcloud) Dynamic Discovery...")
+
+let kepler_mgr = c.init_provider_manager({
+    default_provider: "kepler",
+    free_only: false,
+    providers: [
+        {
+            id: "kepler",
+            name: "Kepler AI Cloud (OVHcloud)",
+            base_url: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+            api_format: "openai",
+            model_discovery: true,
+            enabled: true
+        }
+    ]
+})
+
+assert(kepler_mgr.default_provider == "kepler")
+assert(kepler_mgr.providers.len() == 1)
+
+# Run model discovery on Kepler
+let kepler_models = c.discover_models(kepler_mgr, "kepler", null)
+assert(kepler_models.len() == 22)
+echo("Discovered Kepler AI models count: " + string(kepler_models.len()))
+
+# Find Meta-Llama-3_3-70B-Instruct, Qwen2.5-VL-72B-Instruct, and Qwen3Guard-Gen-8B
+let llama_model = null
+let qwen_vl = null
+let guard_model = null
+for m in kepler_models {
+    if m.id == "Meta-Llama-3_3-70B-Instruct" {
+        llama_model = m
+    }
+    if m.id == "Qwen2.5-VL-72B-Instruct" {
+        qwen_vl = m
+    }
+    if m.id == "Qwen3Guard-Gen-8B" {
+        guard_model = m
+    }
+}
+
+assert(llama_model != null)
+assert(llama_model.context_window == 131072)
+echo("Meta-Llama-3_3-70B-Instruct: 131K context verified: PASS")
+
+assert(qwen_vl != null)
+let vl_has_vision = false
+for cat in qwen_vl.categories {
+    if cat == "vision" {
+        vl_has_vision = true
+    }
+}
+assert(vl_has_vision == true)
+echo("Qwen2.5-VL-72B-Instruct: vision category verified: PASS")
+
+assert(guard_model != null)
+assert(c.is_model_free(guard_model) == true)
+echo("Qwen3Guard-Gen-8B: zero-auth free verified: PASS")
+
 echo("\n============================================================")
-echo("   ALL 11 TEST SECTIONS PASSED SUCCESSFULLY!                ")
+echo("   ALL 12 TEST SECTIONS PASSED SUCCESSFULLY!                ")
 echo("============================================================")

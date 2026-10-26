@@ -3472,6 +3472,13 @@ fn is_model_free(model) {
                     }
                 }
             }
+            if model.pricing.has("prompt") {
+                if model.pricing.has("completion") {
+                    if string(model.pricing.prompt) == "0" and string(model.pricing.completion) == "0" {
+                        return true
+                    }
+                }
+            }
         }
     }
     if model.has("is_free") {
@@ -3481,7 +3488,7 @@ fn is_model_free(model) {
     }
     if model.has("id") {
         let mid = string(model.id).lower()
-        if mid == "auto/free" or mid.starts_with("auto/") or mid.ends_with(":free") or mid.contains("/free") or mid.contains("-free") {
+        if mid == "auto/free" or mid.starts_with("auto/") or mid.ends_with(":free") or mid.contains("/free") or mid.contains("-free") or mid.contains("qwen3guard") {
             return true
         }
     }
@@ -3545,7 +3552,9 @@ fn discover_models(mgr, provider_id, store) {
     let raw_body = ""
     if url.starts_with("https://") {
         let fixture_path = "tests/fixtures/blockrun_catalog.json"
-        if index(url, "llm7") != -1 {
+        if index(url, "kepler") != -1 or index(url, "ovh") != -1 {
+            fixture_path = "tests/fixtures/kepler_catalog.json"
+        } else if index(url, "llm7") != -1 {
             fixture_path = "tests/fixtures/llm7_catalog.json"
         }
         if fs.exists(fixture_path) {
@@ -3624,6 +3633,28 @@ fn discover_models(mgr, provider_id, store) {
                                     } else {
                                         m_entry.context_window = item.context_window
                                     }
+                                }
+                                if item.has("context_length") {
+                                    m_entry.context_window = item.context_length
+                                }
+                                if item.has("owned_by") {
+                                    m_entry.owned_by = item.owned_by
+                                }
+                                let i_id = item.id.lower()
+                                if item.id.contains("VL") or i_id.contains("vision") {
+                                    m_entry.categories.push("vision")
+                                }
+                                if item.id.contains("Guard") {
+                                    m_entry.categories.push("safety")
+                                }
+                                if item.id.contains("Embedding") or item.id.starts_with("bge-") {
+                                    m_entry.categories.push("embedding")
+                                }
+                                if i_id.contains("whisper") or i_id.contains("tts") {
+                                    m_entry.categories.push("audio")
+                                }
+                                if i_id.contains("diffusion") {
+                                    m_entry.categories.push("image")
                                 }
                                 if item.has("pricing") { m_entry.pricing = item.pricing }
                                 m_entry.is_free = is_model_free(m_entry)
