@@ -6,6 +6,7 @@
 import http
 import json
 import fs
+import db
 
 # ------------------------------------------------------------
 # Section 1: URL Normalization & Resolution
@@ -2321,4 +2322,850 @@ fn crawl_url(seed_url, max_pages, max_depth) {
         max_pages: max_pages,
         max_depth: max_depth
     })
+}
+
+# ------------------------------------------------------------
+# Section 10: Persistent Storage & Cache Subsystem
+# ------------------------------------------------------------
+
+fn same_origin(url1, url2) {
+    if url1 == null or url2 == null { return false }
+    let p1 = parse_url(url1)
+    let p2 = parse_url(url2)
+    if not p1.valid or not p2.valid { return false }
+    if p1.protocol != p2.protocol { return false }
+    if p1.hostname != p2.hostname { return false }
+
+    let port1 = p1.port
+    if port1 == "" {
+        if p1.protocol == "http" { port1 = "80" }
+        else if p1.protocol == "https" { port1 = "443" }
+    }
+    let port2 = p2.port
+    if port2 == "" {
+        if p2.protocol == "http" { port2 = "80" }
+        else if p2.protocol == "https" { port2 = "443" }
+    }
+    return port1 == port2
+}
+
+fn filter_headers(headers) {
+    let safe = {}
+    if headers == null { return safe }
+    for k in headers.keys() {
+        let lk = k.lower()
+        if lk != "authorization" and lk != "cookie" and lk != "set-cookie" and lk != "proxy-authorization" {
+            safe[k] = headers[k]
+        }
+    }
+    return safe
+}
+
+fn content_fingerprint(text) {
+    if text == null { return "0_0" }
+    let n = text.len()
+    if n == 0 { return "0_0" }
+
+    let ascii_map = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\n\r\t"
+    let h1 = 5381
+    let h2 = 0
+    let step = 1
+    if n > 2000 {
+        step = int(n / 1000)
+    }
+
+    let i = 0
+    while i < n {
+        let ch = text.slice(i, i + 1)
+        let pos = index(ascii_map, ch)
+        let val = 42
+        if pos != -1 {
+            val = pos + 32
+        }
+        h1 = (h1 * 33 + val) % 2147483647
+        h2 = (h2 + val * (i + 1)) % 1000000007
+        i = i + step
+    }
+    return "fp_" + string(h1) + "_" + string(h2) + "_" + string(n)
+}
+
+fn url_to_cache_key(url) {
+    let s = url.replace("://", "_")
+    s = s.replace("/", "_")
+    s = s.replace("?", "_")
+    s = s.replace("&", "_")
+    s = s.replace("=", "_")
+    s = s.replace(":", "_")
+    s = s.replace("#", "_")
+    s = s.replace("..", "_")
+    if s.len() > 120 {
+        s = s.slice(0, 120)
+    }
+    return "cache_" + s + ".json"
+}
+
+fn init_storage(opts) {
+    let dir = ".crawler_cache"
+    if opts.has("cache_dir") { dir = opts.cache_dir }
+    let save_db = false
+    if opts.has("save_db") { save_db = opts.save_db }
+    let ttl = 86400
+    if opts.has("cache_ttl_seconds") { ttl = opts.cache_ttl_seconds }
+    let backend = "fs"
+    if opts.has("backend") { backend = opts.backend }
+
+    let conn = null
+    if backend == "sqlite" {
+        let db_path = "crawler.db"
+        if opts.has("db_path") { db_path = opts.db_path }
+        conn = db.connect({ driver: "sqlite", path: db_path })
+        conn.exec("CREATE TABLE IF NOT EXISTS page_cache (url TEXT PRIMARY KEY, origin TEXT, fetched_at INTEGER, expires_at INTEGER, status INTEGER, headers TEXT, fingerprint TEXT, record_json TEXT);")
+    } else {
+        if not fs.exists(dir) {
+            fs.mkdir(dir)
+        }
+    }
+
+    return {
+        backend: backend,
+        cache_dir: dir,
+        save_db: save_db,
+        cache_ttl_seconds: ttl,
+        conn: conn
+    }
+}
+
+fn storage_put(store, url, page_data, body) {
+    if not store.save_db { return false }
+
+    let p = parse_url(url)
+    let origin = p.protocol + "://" + p.host
+    let now = int(time())
+    let expires = 0
+    if store.cache_ttl_seconds > 0 {
+        expires = now + store.cache_ttl_seconds
+    }
+
+    let fp = content_fingerprint(body)
+    let safe_hdr = filter_headers(page_data.metadata)
+
+    let record = {
+        url: url,
+        origin: origin,
+        fetched_at: now,
+        expires_at: expires,
+        status: page_data.status,
+        content_fingerprint: fp,
+        txt: page_data.txt,
+        img: page_data.img,
+        video: page_data.video,
+        files: page_data.files,
+        links: page_data.links,
+        crawlable_links: page_data.crawlable_links,
+        metadata: page_data.metadata,
+        tables: page_data.tables,
+        json_ld: page_data.json_ld
+    }
+
+    if store.backend == "sqlite" {
+        let rec_json = json.stringify(record)
+        store.conn.exec("INSERT OR REPLACE INTO page_cache (url, origin, fetched_at, expires_at, status, headers, fingerprint, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+            [url, origin, now, expires, page_data.status, json.stringify(safe_hdr), fp, rec_json])
+    } else {
+        let key = url_to_cache_key(url)
+        let filepath = store.cache_dir + "/" + key
+        fs.write(filepath, json.stringify(record, 2) + "\n")
+    }
+    return true
+}
+
+fn storage_get(store, url, now_time, refresh_cache) {
+    if refresh_cache {
+        return { hit: false, reason: "refresh_requested", record: null }
+    }
+
+    if store.backend == "sqlite" {
+        let rows = store.conn.query("SELECT expires_at, record_json FROM page_cache WHERE url = ?;", [url])
+        if rows.len() == 0 {
+            return { hit: false, reason: "not_found", record: null }
+        }
+        let row = rows[0]
+        if row.expires_at > 0 {
+            if now_time > row.expires_at {
+                return { hit: false, reason: "expired", record: null }
+            }
+        }
+        let rec = json.parse(row.record_json)
+        return { hit: true, reason: "ok", record: rec }
+    } else {
+        let key = url_to_cache_key(url)
+        let filepath = store.cache_dir + "/" + key
+        if not fs.exists(filepath) {
+            return { hit: false, reason: "not_found", record: null }
+        }
+        let raw = fs.read(filepath)
+        if raw.len() == 0 {
+            return { hit: false, reason: "empty_or_corrupt", record: null }
+        }
+        let rec = json.parse(raw)
+        if rec == null {
+            return { hit: false, reason: "corrupt_json", record: null }
+        }
+        if rec.has("expires_at") {
+            if rec.expires_at > 0 {
+                if now_time > rec.expires_at {
+                    return { hit: false, reason: "expired", record: rec }
+                }
+            }
+        }
+        return { hit: true, reason: "ok", record: rec }
+    }
+}
+
+fn storage_invalidate(store, url) {
+    if store.backend == "sqlite" {
+        store.conn.exec("DELETE FROM page_cache WHERE url = ?;", [url])
+        return true
+    } else {
+        let key = url_to_cache_key(url)
+        let filepath = store.cache_dir + "/" + key
+        if fs.exists(filepath) {
+            fs.remove(filepath)
+            return true
+        }
+        return false
+    }
+}
+
+# ------------------------------------------------------------
+# Section 11: Link Graph & Analysis Functions
+# ------------------------------------------------------------
+
+fn get_outgoing_links(res, url) {
+    if res.graph.outgoing.has(url) {
+        return res.graph.outgoing[url]
+    }
+    return []
+}
+
+fn get_incoming_links(res, url) {
+    if res.graph.incoming.has(url) {
+        return res.graph.incoming[url]
+    }
+    return []
+}
+
+fn find_broken_links(res) {
+    let broken = []
+    for p in res.pages {
+        if p.status >= 400 {
+            broken.push({ url: p.url, status: p.status, parent: p.parent_url })
+        }
+    }
+    for err in res.errors {
+        if err.has("url") {
+            if err.url.len() > 0 {
+                if err.code != "ERR_OFFLINE_CACHE_MISS" {
+                    broken.push({ url: err.url, status: 0, error: err.message })
+                }
+            }
+        }
+    }
+    return broken
+}
+
+fn find_redirects(res) {
+    return res.redirects
+}
+
+fn find_duplicate_content(res) {
+    let groups = {}
+    for p in res.pages {
+        if p.has("content_fingerprint") {
+            if p.content_fingerprint.len() > 0 {
+                let fp = p.content_fingerprint
+                if not groups.has(fp) {
+                    groups[fp] = []
+                }
+                groups[fp].push(p.url)
+            }
+        }
+    }
+
+    let duplicates = []
+    for fp in groups.keys() {
+        if groups[fp].len() > 1 {
+            duplicates.push({
+                fingerprint: fp,
+                urls: groups[fp]
+            })
+        }
+    }
+    return duplicates
+}
+
+fn export_graph_json(res, file_path) {
+    let nodes = []
+    let edges = []
+    let seen_nodes = {}
+
+    for p in res.pages {
+        seen_nodes[p.url] = true
+        nodes.push({ id: p.url, status: p.status, depth: p.depth })
+    }
+
+    for link in res.links.discovered {
+        if not seen_nodes.has(link.target_url) {
+            seen_nodes[link.target_url] = true
+            nodes.push({ id: link.target_url, status: 0, depth: -1 })
+        }
+        edges.push({
+            source: link.source_url,
+            target: link.target_url,
+            text: link.text,
+            is_external: link.is_external
+        })
+    }
+
+    let graph_data = { nodes: nodes, edges: edges }
+    fs.write(file_path, json.stringify(graph_data, 2) + "\n")
+    return true
+}
+
+fn export_graph_csv(res, file_path) {
+    let lines = ["source,target,is_external"]
+    for link in res.links.discovered {
+        let r = [escape_csv_val(link.source_url), escape_csv_val(link.target_url), string(link.is_external)]
+        lines.push(join(r, ","))
+    }
+    fs.write(file_path, join(lines, "\n") + "\n")
+    return true
+}
+
+fn spider_stats(res) {
+    return res.stats
+}
+
+# ------------------------------------------------------------
+# Section 12: Advanced Web Spider Engine
+# ------------------------------------------------------------
+
+fn spider(config) {
+    let errors_list = []
+
+    if config == null or typeof(config) != "map" {
+        return {
+            ok: false,
+            seed_url: "",
+            pages: [],
+            links: { discovered: [], internal: [], external: [] },
+            graph: { outgoing: {}, incoming: {} },
+            redirects: [],
+            errors: [{
+                code: "ERR_INVALID_CONFIG",
+                message: "Configuration map expected for crawler.spider()",
+                url: "",
+                operation: "config",
+                retryable: false,
+                suggestion: "Pass a configuration map like crawler.spider({ url: '...' })"
+            }],
+            stats: {},
+            storage: {},
+            stopped_reason: "invalid_config"
+        }
+    }
+
+    let seed_url = ""
+    if config.has("url") { seed_url = config.url }
+    if seed_url.len() == 0 {
+        return {
+            ok: false,
+            seed_url: "",
+            pages: [],
+            links: { discovered: [], internal: [], external: [] },
+            graph: { outgoing: {}, incoming: {} },
+            redirects: [],
+            errors: [{
+                code: "ERR_MISSING_URL",
+                message: "Missing required 'url' parameter in spider configuration",
+                url: "",
+                operation: "config",
+                retryable: false,
+                suggestion: "Provide a valid HTTP/HTTPS seed URL"
+            }],
+            stats: {},
+            storage: {},
+            stopped_reason: "missing_url"
+        }
+    }
+
+    let live_fetch = true
+    if config.has("live_fetch") { live_fetch = config.live_fetch }
+
+    let offline = false
+    if config.has("offline") { offline = config.offline }
+
+    if offline {
+        if config.has("live_fetch") {
+            if config.live_fetch == true {
+                return {
+                    ok: false,
+                    seed_url: seed_url,
+                    pages: [],
+                    links: { discovered: [], internal: [], external: [] },
+                    graph: { outgoing: {}, incoming: {} },
+                    redirects: [],
+                    errors: [{
+                        code: "ERR_CONFIG_CONFLICT",
+                        message: "Conflicting options: 'offline=true' and 'live_fetch=true' cannot both be active simultaneously",
+                        url: seed_url,
+                        operation: "config",
+                        retryable: false,
+                        suggestion: "Set either 'offline=true' or 'live_fetch=true', not both"
+                    }],
+                    stats: {},
+                    storage: {},
+                    stopped_reason: "config_conflict"
+                }
+            }
+        }
+        live_fetch = false
+    }
+
+    let save_db = false
+    if config.has("save_db") { save_db = config.save_db }
+
+    let cache_enabled = true
+    if config.has("cache_enabled") { cache_enabled = config.cache_enabled }
+
+    let cache_policy = "cache_first"
+    if config.has("cache_policy") { cache_policy = config.cache_policy }
+
+    let refresh_cache = false
+    if config.has("refresh_cache") { refresh_cache = config.refresh_cache }
+
+    let max_pages = 20
+    if config.has("max_pages") { max_pages = config.max_pages }
+
+    let max_depth = 3
+    if config.has("max_depth") { max_depth = config.max_depth }
+
+    let same_domain = true
+    if config.has("same_domain") { same_domain = config.same_domain }
+
+    let same_origin_flag = false
+    if config.has("same_origin") { same_origin_flag = config.same_origin }
+
+    let max_external_domains = 5
+    if config.has("max_external_domains") { max_external_domains = config.max_external_domains }
+
+    let max_pages_per_domain = 20
+    if config.has("max_pages_per_domain") { max_pages_per_domain = config.max_pages_per_domain }
+
+    let max_links_per_page = 100
+    if config.has("max_links_per_page") { max_links_per_page = config.max_links_per_page }
+
+    let max_total_requests = 150
+    if config.has("max_total_requests") { max_total_requests = config.max_total_requests }
+
+    let max_redirects = 5
+    if config.has("max_redirects") { max_redirects = config.max_redirects }
+
+    let max_response_bytes = 2000000
+    if config.has("max_response_bytes") { max_response_bytes = config.max_response_bytes }
+
+    let respect_robots = true
+    if config.has("respect_robots") { respect_robots = config.respect_robots }
+
+    let allow_private_ips = false
+    if config.has("allow_private_ips") { allow_private_ips = config.allow_private_ips }
+
+    let allowed_hosts = []
+    if config.has("allowed_hosts") { allowed_hosts = config.allowed_hosts }
+
+    let denied_hosts = []
+    if config.has("denied_hosts") { denied_hosts = config.denied_hosts }
+
+    let allowed_schemes = ["http", "https"]
+    if config.has("allowed_schemes") { allowed_schemes = config.allowed_schemes }
+
+    let headers = { "User-Agent": "MozhiSpider/1.2" }
+    if config.has("headers") {
+        for k in config.headers.keys() { headers[k] = config.headers[k] }
+    }
+
+    let store = init_storage(config)
+    let norm_seed = normalize_url(seed_url)
+    let p_seed = parse_url(norm_seed)
+    if not p_seed.valid {
+        return {
+            ok: false,
+            seed_url: seed_url,
+            pages: [],
+            links: { discovered: [], internal: [], external: [] },
+            graph: { outgoing: {}, incoming: {} },
+            redirects: [],
+            errors: [{
+                code: "ERR_INVALID_URL",
+                message: "Malformed seed URL: " + seed_url,
+                url: seed_url,
+                operation: "parse_url",
+                retryable: false,
+                suggestion: "Check scheme and host syntax"
+            }],
+            stats: {},
+            storage: {},
+            stopped_reason: "invalid_seed_url"
+        }
+    }
+
+    let seed_domain = p_seed.hostname
+    let total_requests = 0
+
+    # Robots.txt
+    let robots_rules = null
+    if respect_robots and live_fetch {
+        let rob_url = p_seed.protocol + "://" + p_seed.host + "/robots.txt"
+        total_requests = total_requests + 1
+        let rob_res = fetch_with_redirects(rob_url, headers, max_redirects, allow_private_ips)
+        if rob_res.status == 200 {
+            robots_rules = parse_robots_txt(rob_res.body, headers["User-Agent"])
+        }
+    }
+
+    let queue = [ { url: norm_seed, depth: 0, parent_url: "" } ]
+    let visited = {}
+    visited[norm_seed] = true
+
+    let domain_page_counts = {}
+    let external_domains_visited = {}
+    let crawled_pages = []
+    let discovered_links = []
+    let internal_urls = []
+    let external_urls = []
+    let graph_outgoing = {}
+    let graph_incoming = {}
+    let redirects_list = []
+    let skipped_list = []
+    let cache_hits = 0
+    let cache_misses = 0
+    let stopped_reason = "completed"
+
+    while queue.len() > 0 {
+        if crawled_pages.len() >= max_pages {
+            stopped_reason = "max_pages_reached"
+            break
+        }
+        if total_requests >= max_total_requests {
+            stopped_reason = "max_total_requests_reached"
+            break
+        }
+
+        let item = queue[0]
+        let next_queue = []
+        let qi = 1
+        while qi < queue.len() {
+            next_queue.push(queue[qi])
+            qi = qi + 1
+        }
+        queue = next_queue
+
+        let current_url = item.url
+        let depth = item.depth
+        let parent_url = item.parent_url
+
+        let p_curr = parse_url(current_url)
+        let curr_domain = p_curr.hostname
+
+        # Check domain page limit
+        if domain_page_counts.has(curr_domain) {
+            if domain_page_counts[curr_domain] >= max_pages_per_domain {
+                skipped_list.push({ url: current_url, reason: "domain_page_limit_reached", depth: depth })
+                continue
+            }
+        }
+
+        # Check external domain limit
+        if curr_domain != seed_domain {
+            if not external_domains_visited.has(curr_domain) {
+                if external_domains_visited.keys().len() >= max_external_domains {
+                    skipped_list.push({ url: current_url, reason: "max_external_domains_reached", depth: depth })
+                    continue
+                }
+            }
+        }
+
+        # Check allowed/denied hosts
+        if denied_hosts.len() > 0 {
+            let is_denied = false
+            for dh in denied_hosts {
+                if curr_domain == dh or curr_domain.ends_with("." + dh) {
+                    is_denied = true
+                    break
+                }
+            }
+            if is_denied {
+                skipped_list.push({ url: current_url, reason: "host_denied", depth: depth })
+                continue
+            }
+        }
+
+        if allowed_hosts.len() > 0 {
+            let is_allowed = false
+            for ah in allowed_hosts {
+                if curr_domain == ah or curr_domain.ends_with("." + ah) {
+                    is_allowed = true
+                    break
+                }
+            }
+            if not is_allowed {
+                skipped_list.push({ url: current_url, reason: "host_not_allowed", depth: depth })
+                continue
+            }
+        }
+
+        # Check robots.txt
+        if robots_rules != null {
+            if not is_robots_allowed(robots_rules, p_curr.path, headers["User-Agent"]) {
+                skipped_list.push({ url: current_url, reason: "disallowed_by_robots", depth: depth })
+                continue
+            }
+        }
+
+        let now_time = int(time())
+        let use_cached = false
+        let page_data = null
+        let change_status = "new"
+
+        # Check cache
+        if cache_enabled {
+            if cache_policy == "cache_first" or cache_policy == "cache_only" or not live_fetch {
+                let cache_res = storage_get(store, current_url, now_time, refresh_cache)
+                if cache_res.hit {
+                    cache_hits = cache_hits + 1
+                    use_cached = true
+                    page_data = cache_res.record
+                    change_status = "cached"
+                }
+            }
+        }
+
+        if not use_cached {
+            if not live_fetch {
+                cache_misses = cache_misses + 1
+                errors_list.push({
+                    code: "ERR_OFFLINE_CACHE_MISS",
+                    message: "Page not in offline cache: " + current_url,
+                    url: current_url,
+                    operation: "fetch",
+                    retryable: false,
+                    suggestion: "Run spider with live_fetch=true and save_db=true first to populate offline cache."
+                })
+                skipped_list.push({ url: current_url, reason: "offline_cache_miss", depth: depth })
+                continue
+            }
+
+            # Live Fetch
+            if total_requests >= max_total_requests {
+                stopped_reason = "max_total_requests_reached"
+                break
+            }
+
+            let resp = fetch_with_redirects(current_url, headers, max_redirects, allow_private_ips)
+            total_requests = total_requests + 1
+            if resp.redirects > 0 {
+                total_requests = total_requests + resp.redirects
+                redirects_list.push({
+                    source_url: current_url,
+                    target_url: resp.url,
+                    status: resp.status,
+                    hops: resp.redirects
+                })
+            }
+
+            if resp.status != 200 {
+                errors_list.push({
+                    code: "ERR_HTTP_STATUS",
+                    message: "HTTP request failed with status " + string(resp.status) + " (" + resp.error + ")",
+                    url: current_url,
+                    operation: "fetch",
+                    retryable: (resp.status >= 500),
+                    suggestion: "Check destination URL accessibility"
+                })
+                crawled_pages.push({
+                    url: current_url,
+                    status: resp.status,
+                    depth: depth,
+                    parent_url: parent_url,
+                    error: resp.error,
+                    txt: { title: "", paragraphs: [] },
+                    img: [], video: [], files: [],
+                    links: { internal: [], external: [] },
+                    crawlable_links: []
+                })
+                continue
+            }
+
+            if resp.body.len() > max_response_bytes {
+                errors_list.push({
+                    code: "ERR_RESPONSE_TOO_LARGE",
+                    message: "Response body exceeded max_response_bytes",
+                    url: current_url,
+                    operation: "fetch",
+                    retryable: false,
+                    suggestion: "Increase max_response_bytes"
+                })
+                skipped_list.push({ url: current_url, reason: "response_too_large", depth: depth })
+                continue
+            }
+
+            page_data = extract_page_data(resp.url, resp.body)
+            page_data["status"] = resp.status
+            if config.has("extract_schema") {
+                if config.extract_schema != null {
+                    page_data["schema_data"] = extract(page_data.doc, config.extract_schema)
+                }
+            }
+
+            let fp = content_fingerprint(resp.body)
+            page_data["content_fingerprint"] = fp
+
+            # Check change status against prior cache
+            let prev_cache = storage_get(store, current_url, now_time, false)
+            if prev_cache.hit {
+                if prev_cache.record.content_fingerprint == fp {
+                    change_status = "unchanged"
+                } else {
+                    change_status = "changed"
+                }
+            } else {
+                change_status = "new"
+            }
+
+            if save_db {
+                storage_put(store, current_url, page_data, resp.body)
+            }
+        }
+
+        page_data["depth"] = depth
+        page_data["parent_url"] = parent_url
+        page_data["change_status"] = change_status
+
+        crawled_pages.push(page_data)
+
+        if domain_page_counts.has(curr_domain) {
+            domain_page_counts[curr_domain] = domain_page_counts[curr_domain] + 1
+        } else {
+            domain_page_counts[curr_domain] = 1
+        }
+
+        if curr_domain != seed_domain {
+            external_domains_visited[curr_domain] = true
+        }
+
+        # Process all discovered links (internal and external)
+        if not graph_outgoing.has(current_url) {
+            graph_outgoing[current_url] = []
+        }
+
+        let all_page_links = []
+        for lk in page_data.links.internal { all_page_links.push(lk) }
+        for lk in page_data.links.external { all_page_links.push(lk) }
+
+        let link_count = 0
+        for lk in all_page_links {
+            if link_count >= max_links_per_page { break }
+            let resolved = lk.url
+            if resolved != null and resolved.len() > 0 {
+                link_count = link_count + 1
+                let p_res = parse_url(resolved)
+                let is_orig = same_origin(seed_url, resolved)
+                let is_ext = not same_host(seed_url, resolved)
+
+                discovered_links.push({
+                    source_url: current_url,
+                    target_url: resolved,
+                    text: lk.label,
+                    is_external: is_ext,
+                    is_same_origin: is_orig
+                })
+
+                graph_outgoing[current_url].push(resolved)
+
+                if not graph_incoming.has(resolved) {
+                    graph_incoming[resolved] = []
+                }
+                graph_incoming[resolved].push(current_url)
+
+                if is_ext {
+                    external_urls.push(resolved)
+                } else {
+                    internal_urls.push(resolved)
+                }
+
+                # Queue decision
+                if depth + 1 <= max_depth {
+                    if not visited.has(resolved) {
+                        let can_enqueue = true
+                        if same_origin_flag and not is_orig {
+                            can_enqueue = false
+                        } else if same_domain and is_ext {
+                            can_enqueue = false
+                        }
+
+                        if can_enqueue {
+                            visited[resolved] = true
+                            queue.push({
+                                url: resolved,
+                                depth: depth + 1,
+                                parent_url: current_url
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let result = {
+        ok: (errors_list.len() == 0 or crawled_pages.len() > 0),
+        seed_url: seed_url,
+        pages: crawled_pages,
+        links: {
+            discovered: discovered_links,
+            internal: internal_urls,
+            external: external_urls
+        },
+        graph: {
+            outgoing: graph_outgoing,
+            incoming: graph_incoming
+        },
+        redirects: redirects_list,
+        errors: errors_list,
+        skipped: skipped_list,
+        stats: {
+            total_pages_crawled: crawled_pages.len(),
+            total_requests: total_requests,
+            total_links_discovered: discovered_links.len(),
+            total_internal_links: internal_urls.len(),
+            total_external_links: external_urls.len(),
+            total_redirects: redirects_list.len(),
+            total_errors: errors_list.len(),
+            cache_hits: cache_hits,
+            cache_misses: cache_misses,
+            domains_crawled: domain_page_counts.keys()
+        },
+        storage: {
+            backend: store.backend,
+            save_db: store.save_db,
+            cache_dir: store.cache_dir
+        },
+        stopped_reason: stopped_reason
+    }
+
+    if config.has("export_json_path") {
+        export_json(result, config.export_json_path)
+    }
+
+    return result
 }

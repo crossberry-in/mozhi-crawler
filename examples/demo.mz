@@ -1,63 +1,83 @@
 # ============================================================
-# Mozhi Crawler Demo & Showcase — mozhi run examples/demo.mz
+# Mozhi Crawler & Spider Demo & Showcase — mozhi run examples/demo.mz
 # 100% Native Pure Mozhi
 # ============================================================
 
 import crawler from "../src/mod.mz"
 
 echo("================================================================")
-echo("             MOZHI WEB CRAWLER & SELECTOR ENGINE                ")
+echo("          MOZHI CRAWLER & WEB SPIDER v1.2.0 DEMO                ")
 echo("================================================================")
 
-# 1. URL Parsing & Resolution
-echo("\n--- [Demo 1] URL Parsing & Resolution ---")
-let parsed = crawler.parse_url("http://127.0.0.1:8089/products?category=tools#catalog")
+# 1. URL Parsing, Normalization & Origin Check
+echo("\n--- [Demo 1] URL Normalization & Origin Verification ---")
+let parsed = crawler.parse_url("http://127.0.0.1:8089/products/../docs/./install?v=1#readme")
 echo("Hostname: " + parsed.hostname)
 echo("Path:     " + parsed.path)
-echo("Query:    " + parsed.query)
-echo("Fragment: " + parsed.fragment)
+echo("Normalized: " + crawler.normalize_url("http://127.0.0.1:8089/products/../docs/./install?v=1#readme"))
+echo("Same origin check: " + string(crawler.same_origin("http://127.0.0.1:8089/a", "http://127.0.0.1:8089/b")))
 
-let resolved = crawler.resolve_url("http://127.0.0.1:8089/docs/quickstart", "../blog/post-1")
-echo("Resolved: " + resolved)
+# 2. Live Fetch & Persistent Storage (save_db=true)
+echo("\n--- [Demo 2] Advanced Web Spider (Live Fetch & Cache) ---")
+let spider_res = crawler.spider({
+    url: "http://127.0.0.1:8089/",
+    live_fetch: true,
+    save_db: true,
+    cache_dir: ".crawler_cache",
+    max_pages: 5,
+    max_depth: 2,
+    same_domain: true,
+    max_total_requests: 15,
+    allow_private_ips: true
+})
 
-# 2. Scraping & Categorized Tables
-echo("\n--- [Demo 2] Scraping & Categorized Tables ---")
-let page = crawler.scrape("http://127.0.0.1:8089/media-showcase")
-if page != null {
-    echo("Scraped Title:  " + page.txt.title)
-    echo("Images:         " + string(page.img.len()))
-    echo("Videos:         " + string(page.video.len()))
-    echo("Files:          " + string(page.files.len()))
-    echo("Internal Links: " + string(page.links.internal.len()))
-    echo("External Links: " + string(page.links.external.len()))
+echo("Spider Success: " + string(spider_res.ok))
+echo("Pages Crawled:  " + string(spider_res.pages.len()))
+echo("Total Requests: " + string(spider_res.stats.total_requests))
+echo("Cache Hits:     " + string(spider_res.stats.cache_hits))
+echo("Stopped Reason: " + spider_res.stopped_reason)
 
-    # Print pretty categorized tables
-    crawler.print_tables(page)
-}
+# 3. Offline Reading from Cache (live_fetch=false)
+echo("\n--- [Demo 3] Offline Mode Reading (Zero Network Calls) ---")
+let offline_res = crawler.spider({
+    url: "http://127.0.0.1:8089/",
+    offline: true,
+    cache_dir: ".crawler_cache",
+    max_pages: 3,
+    allow_private_ips: true
+})
+echo("Offline Ok:       " + string(offline_res.ok))
+echo("Offline Pages:    " + string(offline_res.pages.len()))
+echo("Network Requests: " + string(offline_res.stats.total_requests) + " (must be 0)")
+echo("Cache Hits:       " + string(offline_res.stats.cache_hits))
 
-# 3. CSS Selector Engine & DOM Queries
-echo("\n--- [Demo 3] CSS Selector Engine ---")
+# 4. Link Graph & Analysis
+echo("\n--- [Demo 4] Link Graph & Website Analysis ---")
+let stats = crawler.spider_stats(spider_res)
+echo("Discovered Links: " + string(stats.total_links_discovered))
+echo("Internal Targets: " + string(stats.total_internal_links))
+echo("External Targets: " + string(stats.total_external_links))
+
+let outgoing_seed = crawler.get_outgoing_links(spider_res, "http://127.0.0.1:8089/")
+echo("Outgoing links from Seed: " + string(outgoing_seed.len()))
+
+let incoming_about = crawler.get_incoming_links(spider_res, "http://127.0.0.1:8089/about")
+echo("Incoming links to /about: " + string(incoming_about.len()))
+
+let duplicates = crawler.find_duplicate_content(spider_res)
+echo("Duplicate content groups: " + string(duplicates.len()))
+
+let broken = crawler.find_broken_links(spider_res)
+echo("Confirmed broken links:   " + string(broken.len()))
+
+# Export graph
+crawler.export_graph_json(spider_res, "crawled_graph.json")
+crawler.export_graph_csv(spider_res, "crawled_graph.csv")
+echo("Exported link graph to crawled_graph.json & crawled_graph.csv")
+
+# 5. Declarative Schema Extraction on E-Commerce Products
+echo("\n--- [Demo 5] Declarative Schema Extraction ---")
 let product_page = crawler.scrape("http://127.0.0.1:8089/products")
-if product_page != null {
-    let doc = product_page.doc
-
-    # Query all product titles
-    let titles = crawler.query_selector_all(doc, "article.product-item h2.prod-title", null)
-    echo("Found " + string(titles.len()) + " products via CSS selector 'article.product-item h2.prod-title':")
-    for tid in titles {
-        echo("  - " + crawler.node_text(doc, tid))
-    }
-
-    # Query featured product
-    let feat = crawler.query_selector(doc, "article.product-item.featured", null)
-    if feat != null {
-        let price_nid = crawler.query_selector(doc, ".prod-price", feat)
-        echo("Featured product price: " + crawler.node_text(doc, price_nid))
-    }
-}
-
-# 4. Declarative Schema Extraction
-echo("\n--- [Demo 4] Declarative Schema Extraction ---")
 let product_schema = {
     "catalog_title": "header h1",
     "products": {
@@ -65,66 +85,22 @@ let product_schema = {
         "multiple": true,
         "fields": {
             "id": { "attribute": "data-id" },
-            "category": { "attribute": "data-category" },
             "name": "h2.prod-title",
             "price": "span.prod-price",
-            "description": "p.prod-desc",
-            "buy_link": { "selector": "a.buy", "attribute": "href" }
+            "buy_url": { "selector": "a.buy", "attribute": "href" }
         }
     }
 }
-
-let extracted = crawler.extract(product_page.doc, product_schema)
-echo("Catalog: " + extracted.catalog_title)
-for prod in extracted.products {
-    echo("  [" + prod.id + "] (" + prod.category + ") " + prod.name + " - " + prod.price)
-    echo("    Buy URL: " + prod.buy_link)
-    echo("    Desc:    " + prod.description)
+let catalog = crawler.extract(product_page.doc, product_schema)
+echo("Catalog: " + catalog.catalog_title)
+for p in catalog.products {
+    echo("  - [" + p.id + "] " + p.name + " (" + p.price + ") -> " + p.buy_url)
 }
 
-# 5. Robots.txt and Sitemap Parsing
-echo("\n--- [Demo 5] Robots.txt & Sitemap Parsing ---")
-let sitemap_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-    + "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n"
-    + "  <url><loc>http://127.0.0.1:8089/</loc><priority>1.0</priority></url>\n"
-    + "  <url><loc>http://127.0.0.1:8089/about</loc><priority>0.8</priority></url>\n"
-    + "  <url><loc>http://127.0.0.1:8089/products</loc><priority>0.9</priority></url>\n"
-    + "</urlset>"
-
-let sitemap_urls = crawler.parse_sitemap(sitemap_xml)
-echo("Parsed Sitemap URLs: " + string(sitemap_urls.len()))
-for u in sitemap_urls { echo("  Loc: " + u) }
-
-# 6. BFS Web Crawling & Live JSON Export
-echo("\n--- [Demo 6] BFS Crawler with Live JSON Result ---")
-let crawl_res = crawler.crawl({
-    url: "http://127.0.0.1:8089/",
-    max_pages: 5,
-    max_depth: 2,
-    robots_txt: false,
-    allow_private_ips: true,
-    export_json_path: "live_result.json"
-})
-
-echo("Total Pages Crawled: " + string(crawl_res.total_pages))
-for p in crawl_res.pages {
-    echo("  Crawled: " + p.url + " (" + p.txt.title + ") - " + string(p.links.internal.len()) + " internal links")
-}
-echo("Saved live JSON result to: live_result.json")
-
-# Export to CSV
-let csv_rows = []
-for p in crawl_res.pages {
-    csv_rows.push({
-        url: p.url,
-        title: p.txt.title,
-        images_count: p.img.len(),
-        files_count: p.files.len(),
-        links_count: p.links.internal.len()
-    })
-}
-crawler.export_csv(["url", "title", "images_count", "files_count", "links_count"], csv_rows, "crawled_summary.csv")
-echo("Exported summary to: crawled_summary.csv")
+# 6. Categorized Terminal Tables
+echo("\n--- [Demo 6] Categorized Terminal Tables ---")
+let media_page = crawler.scrape("http://127.0.0.1:8089/media-showcase")
+crawler.print_tables(media_page)
 
 echo("\n================================================================")
 echo("               DEMO FINISHED SUCCESSFULLY                       ")

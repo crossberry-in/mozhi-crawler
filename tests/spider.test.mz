@@ -1,0 +1,265 @@
+# ============================================================
+# Spider & Storage & Graph Analysis Test Suite — tests/spider.test.mz
+# 100% Native Pure Mozhi
+# ============================================================
+
+import c from "../src/mod.mz"
+import fs from "fs"
+
+echo("Running Spider v1.2.0 test suite...")
+
+let test_cache_dir = ".test_spider_cache"
+if fs.exists(test_cache_dir) {
+    fs.remove(test_cache_dir, true)
+}
+
+# ------------------------------------------------------------
+# 1. Origin Comparison & Content Fingerprinting
+# ------------------------------------------------------------
+echo("[1/6] Testing same_origin & content_fingerprint...")
+
+assert(c.same_origin("http://127.0.0.1:8089/a", "http://127.0.0.1:8089/b"))
+assert(c.same_origin("http://127.0.0.1:8089/", "http://127.0.0.1:8089/docs/install"))
+assert(c.same_origin("http://example.com:80/path", "http://example.com/path"))
+assert(c.same_origin("https://example.com:443/", "https://example.com/"))
+assert(c.same_origin("http://127.0.0.1:8089/", "http://127.0.0.1:8090/") == false)
+assert(c.same_origin("http://example.com/", "https://example.com/") == false)
+assert(c.same_origin("http://example.com/", "http://sub.example.com/") == false)
+
+let fp1 = c.content_fingerprint("Hello World 123")
+let fp2 = c.content_fingerprint("Hello World 123")
+let fp3 = c.content_fingerprint("Different World 456")
+assert_eq(fp1, fp2)
+assert(fp1 != fp3)
+
+# ------------------------------------------------------------
+# 2. Live Fetch vs Storage Modes (save_db=true vs save_db=false)
+# ------------------------------------------------------------
+echo("[2/6] Testing Storage Modes & Live Fetch...")
+
+# Mode A: live_fetch=true, save_db=false (fetches live, no persistent files written)
+let res_live_nosave = c.spider({
+    url: "http://127.0.0.1:8089/about",
+    live_fetch: true,
+    save_db: false,
+    max_pages: 1,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_live_nosave.ok, true)
+assert_eq(res_live_nosave.pages.len(), 1)
+assert(res_live_nosave.stats.total_requests >= 1)
+# Ensure no cache files were written
+let cache_key_about = c.url_to_cache_key("http://127.0.0.1:8089/about")
+assert(fs.exists(test_cache_dir + "/" + cache_key_about) == false)
+
+# Mode B: live_fetch=true, save_db=true (fetches live, persists to storage)
+let res_live_save = c.spider({
+    url: "http://127.0.0.1:8089/about",
+    live_fetch: true,
+    save_db: true,
+    max_pages: 1,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_live_save.ok, true)
+assert_eq(res_live_save.pages.len(), 1)
+assert(fs.exists(test_cache_dir + "/" + cache_key_about) == true)
+
+# Mode C: live_fetch=false, save_db=false (offline reading from cache, zero network requests)
+let res_offline = c.spider({
+    url: "http://127.0.0.1:8089/about",
+    live_fetch: false,
+    save_db: false,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_offline.ok, true)
+assert_eq(res_offline.pages.len(), 1)
+assert_eq(res_offline.stats.total_requests, 0) # Zero network requests!
+assert_eq(res_offline.stats.cache_hits, 1)
+
+# Mode D: offline convenience alias
+let res_offline_alias = c.spider({
+    url: "http://127.0.0.1:8089/about",
+    offline: true,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_offline_alias.ok, true)
+assert_eq(res_offline_alias.stats.total_requests, 0)
+
+# Mode E: Config conflict detection (offline=true and live_fetch=true)
+let res_conflict = c.spider({
+    url: "http://127.0.0.1:8089/about",
+    offline: true,
+    live_fetch: true,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_conflict.ok, false)
+assert_eq(res_conflict.errors[0].code, "ERR_CONFIG_CONFLICT")
+
+# Mode F: Offline cache miss
+let res_miss = c.spider({
+    url: "http://127.0.0.1:8089/non-existent-page-never-cached",
+    live_fetch: false,
+    save_db: false,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_miss.ok, false)
+assert_eq(res_miss.errors[0].code, "ERR_OFFLINE_CACHE_MISS")
+assert_eq(res_miss.stats.total_requests, 0) # Zero network requests!
+
+# ------------------------------------------------------------
+# 3. Cache TTL Expiration & Invalidation
+# ------------------------------------------------------------
+echo("[3/6] Testing Cache Invalidation & Expiration...")
+
+let store = c.init_storage({
+    cache_dir: test_cache_dir,
+    save_db: true,
+    cache_ttl_seconds: 10 # 10s TTL
+})
+
+let fake_page = {
+    status: 200,
+    txt: { title: "TTL Test", paragraphs: [] },
+    img: [], video: [], files: [],
+    links: { internal: [], external: [] },
+    crawlable_links: [], metadata: {}, tables: [], json_ld: []
+}
+
+c.storage_put(store, "http://example.com/ttl", fake_page, "TTL Body")
+let now_time = int(time())
+
+# Cache hit before expiration
+let get_ok = c.storage_get(store, "http://example.com/ttl", now_time, false)
+assert_eq(get_ok.hit, true)
+assert_eq(get_ok.record.txt.title, "TTL Test")
+
+# Cache expired check
+let get_expired = c.storage_get(store, "http://example.com/ttl", now_time + 100, false)
+assert_eq(get_expired.hit, false)
+assert_eq(get_expired.reason, "expired")
+
+# Cache invalidation
+c.storage_invalidate(store, "http://example.com/ttl")
+let get_invalidated = c.storage_get(store, "http://example.com/ttl", now_time, false)
+assert_eq(get_invalidated.hit, false)
+assert_eq(get_invalidated.reason, "not_found")
+
+# ------------------------------------------------------------
+# 4. Spider Limits & Request Budgets
+# ------------------------------------------------------------
+echo("[4/6] Testing Spider Limits & Request Budgets...")
+
+# Strict max_total_requests limit
+let res_budget = c.spider({
+    url: "http://127.0.0.1:8089/",
+    max_pages: 50,
+    max_depth: 3,
+    max_total_requests: 3, # Hard request limit
+    live_fetch: true,
+    save_db: false,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert(res_budget.stats.total_requests <= 3)
+assert_eq(res_budget.stopped_reason, "max_total_requests_reached")
+
+# Max pages limit
+let res_pages = c.spider({
+    url: "http://127.0.0.1:8089/",
+    max_pages: 2,
+    max_depth: 3,
+    max_total_requests: 50,
+    live_fetch: true,
+    save_db: false,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_pages.pages.len(), 2)
+assert_eq(res_pages.stopped_reason, "max_pages_reached")
+
+# ------------------------------------------------------------
+# 5. External Link Controls (Discovery vs Fetching)
+# ------------------------------------------------------------
+echo("[5/6] Testing External-Link Controls & Discovery...")
+
+let res_ext = c.spider({
+    url: "http://127.0.0.1:8089/external",
+    same_domain: true, # Do NOT crawl external domains
+    max_pages: 5,
+    max_depth: 2,
+    live_fetch: true,
+    save_db: false,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+
+# Verify external links were discovered and graphed, but NOT fetched
+assert(res_ext.links.external.len() > 0)
+let found_example_com = false
+for ext_u in res_ext.links.external {
+    if ext_u.contains("example.com") {
+        found_example_com = true
+    }
+}
+assert(found_example_com)
+
+# Verify no external pages were fetched
+for p in res_ext.pages {
+    assert(p.url.starts_with("http://127.0.0.1:8089"))
+}
+
+# ------------------------------------------------------------
+# 6. Link Graph, Analysis & Incremental Crawling
+# ------------------------------------------------------------
+echo("[6/6] Testing Link Graph, Analysis & Incremental Status...")
+
+let res_crawl = c.spider({
+    url: "http://127.0.0.1:8089/",
+    max_pages: 4,
+    max_depth: 2,
+    live_fetch: true,
+    save_db: true,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+
+# Stats
+let st = c.spider_stats(res_crawl)
+assert(st.total_pages_crawled >= 1)
+assert(st.total_links_discovered >= 1)
+
+# Graph incoming / outgoing
+let out_links = c.get_outgoing_links(res_crawl, "http://127.0.0.1:8089/")
+assert(out_links.len() >= 1)
+
+let inc_about = c.get_incoming_links(res_crawl, "http://127.0.0.1:8089/about")
+assert(inc_about.len() >= 1)
+
+# Export graph
+c.export_graph_json(res_crawl, test_cache_dir + "/graph.json")
+c.export_graph_csv(res_crawl, test_cache_dir + "/graph.csv")
+assert(fs.exists(test_cache_dir + "/graph.json"))
+assert(fs.exists(test_cache_dir + "/graph.csv"))
+
+# Incremental status check (re-crawl with refresh_cache=true to fetch live and compare fingerprints)
+let res_incremental = c.spider({
+    url: "http://127.0.0.1:8089/",
+    max_pages: 1,
+    live_fetch: true,
+    save_db: true,
+    refresh_cache: true,
+    allow_private_ips: true,
+    cache_dir: test_cache_dir
+})
+assert_eq(res_incremental.pages[0].change_status, "unchanged")
+
+# Cleanup test cache
+fs.remove(test_cache_dir, true)
+
+echo("tests/spider: ALL 6 TEST SECTIONS PASSED")
