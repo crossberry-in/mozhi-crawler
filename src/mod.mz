@@ -3232,6 +3232,8 @@ fn init_provider_manager(config_or_path) {
     }
     base_cfg.providers.push(blockrun_provider)
 
+
+
     if config_or_path == null {
         return base_cfg
     }
@@ -3477,6 +3479,12 @@ fn is_model_free(model) {
             return true
         }
     }
+    if model.has("id") {
+        let mid = string(model.id).lower()
+        if mid.ends_with(":free") or mid.contains("/free") or mid.contains("-free") {
+            return true
+        }
+    }
     return false
 }
 
@@ -3678,6 +3686,10 @@ fn select_model_for_task(mgr, provider_id, task_type, req_vision) {
             if task_type == "coding" {
                 if cat == "coding" {
                     score = score + 10
+                }
+                let mid = m.id.lower()
+                if mid.contains("code") or mid.contains("laguna") or mid.contains("flint") or mid.contains("kilo") {
+                    score = score + 15
                 }
             }
             if task_type == "vision" {

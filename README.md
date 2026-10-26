@@ -93,6 +93,21 @@ A complete web research, multi-agent synthesis, spider, DOM tree parser, CSS sel
 
 ---
 
+
+### Free Kilo Code Models Support
+
+Mozhi Crawler automatically identifies and routes Kilo Code free models under `free_only: true`:
+
+| Model Identifier | Display Name | Tasks | Context Window | Price |
+|---|---|---|---|---|
+| `kilo-auto/free` | Kilo Auto Free Router | coding, reasoning, chat | 256,000 | **$0.00** |
+| `poolside/laguna-s-2.1:free` | Poolside Laguna S 2.1 | coding, debugging | 262,144 | **$0.00** |
+| `poolside/laguna-xs-2.1:free` | Poolside Laguna XS 2.1 | fast code generation | 262,144 | **$0.00** |
+| `cohere/north-mini-code:free` | Cohere North Mini Code | code analysis, tests | 256,000 | **$0.00** |
+| `recursive/flint-v1.0:free` | Recursive Flint | autonomous coding agent | 262,144 | **$0.00** |
+| `reflection/beam-free` | Reflection Beam 1.0 | 1M reasoning & code | 1,048,576 | **$0.00** |
+| `nvidia/nemotron-3.5-super-vl:free` | Nemotron 3.5 Super VL | multimodal vision & code | 1,000,000 | **$0.00** |
+
 ## Features
 
 * **100% Native Pure Mozhi**: Zero external runtimes, Python, Node.js, PHP, or Go bridges. Built strictly on native standard modules (`http`, `json`, `fs`, `db`).
