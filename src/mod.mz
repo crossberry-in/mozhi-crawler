@@ -3481,7 +3481,7 @@ fn is_model_free(model) {
     }
     if model.has("id") {
         let mid = string(model.id).lower()
-        if mid.ends_with(":free") or mid.contains("/free") or mid.contains("-free") {
+        if mid == "auto/free" or mid.starts_with("auto/") or mid.ends_with(":free") or mid.contains("/free") or mid.contains("-free") {
             return true
         }
     }
