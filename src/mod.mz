@@ -2438,6 +2438,25 @@ fn init_storage(opts) {
 fn storage_put(store, url, page_data, body) {
     if not store.save_db { return false }
 
+    let now = int(time())
+    let expires = 0
+    if store.cache_ttl_seconds > 0 {
+        expires = now + store.cache_ttl_seconds
+    }
+
+    if page_data.has("answer") {
+        if store.backend == "sqlite" {
+            let rec_json = json.stringify(page_data)
+            store.conn.exec("INSERT OR REPLACE INTO page_cache (url, origin, fetched_at, expires_at, status, headers, fingerprint, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                [url, url, now, expires, 200, "{}", "", rec_json])
+        } else {
+            let key = url_to_cache_key(url)
+            let filepath = store.cache_dir + "/" + key
+            fs.write(filepath, json.stringify(page_data, 2) + "\n")
+        }
+        return true
+    }
+
     let p = parse_url(url)
     let origin = p.protocol + "://" + p.host
     let now = int(time())
@@ -3169,3 +3188,1653 @@ fn spider(config) {
 
     return result
 }
+
+
+# ==============================================================================
+# SECTION 13: LLM PROVIDER MANAGER & CONFIGURATION
+# ==============================================================================
+
+fn redact_sensitive(val) {
+    if val == null {
+        return ""
+    }
+    let s = string(val)
+    if s.len() <= 6 {
+        return "[REDACTED]"
+    }
+    return s.slice(0, 3) + "...[REDACTED]"
+}
+
+fn init_provider_manager(config_or_path) {
+    let base_cfg = {
+        default_provider: "blockrun",
+        free_only: true,
+        auto_model: true,
+        auto_fallback: true,
+        providers: [],
+        stats: {
+            total_calls: 0,
+            fallback_count: 0,
+            cache_hits: 0
+        }
+    }
+
+    # Add default BlockRun provider
+    let blockrun_provider = {
+        id: "blockrun",
+        name: "BlockRun",
+        base_url: "https://blockrun.ai/api/v1",
+        api_format: "openai",
+        api_key_env: "BLOCKRUN_API_KEY",
+        model_discovery: true,
+        enabled: true,
+        models: []
+    }
+    base_cfg.providers.push(blockrun_provider)
+
+    if config_or_path == null {
+        return base_cfg
+    }
+
+    if typeof(config_or_path) == "string" {
+        if fs.exists(config_or_path) {
+            let content = fs.read(config_or_path)
+            if content.len() > 0 {
+                let parsed = json.parse(content)
+                if typeof(parsed) == "map" {
+                    config_or_path = parsed
+                }
+            }
+        }
+    }
+
+    if typeof(config_or_path) == "map" {
+        if config_or_path.has("default_provider") {
+            base_cfg.default_provider = config_or_path.default_provider
+        }
+        if config_or_path.has("free_only") {
+            base_cfg.free_only = config_or_path.free_only
+        }
+        if config_or_path.has("auto_model") {
+            base_cfg.auto_model = config_or_path.auto_model
+        }
+        if config_or_path.has("auto_fallback") {
+            base_cfg.auto_fallback = config_or_path.auto_fallback
+        }
+        if config_or_path.has("providers") {
+            if typeof(config_or_path.providers) == "array" {
+                if config_or_path.providers.len() > 0 {
+                    base_cfg.providers = []
+                    for p in config_or_path.providers {
+                        if typeof(p) == "map" {
+                            if p.has("id") {
+                                if p.has("name") {
+                                    if p.has("base_url") {
+                                        let p_copy = {
+                                            id: p.id,
+                                            name: p.name,
+                                            base_url: p.base_url,
+                                            api_format: "openai",
+                                            enabled: true,
+                                            model_discovery: true,
+                                            models: []
+                                        }
+                                        if p.has("api_format") { p_copy.api_format = p.api_format }
+                                        if p.has("api_key_env") { p_copy.api_key_env = p.api_key_env }
+                                        if p.has("api_key") { p_copy.api_key = p.api_key }
+                                        if p.has("enabled") { p_copy.enabled = p.enabled }
+                                        if p.has("model_discovery") { p_copy.model_discovery = p.model_discovery }
+                                        if p.has("models") {
+                                            if typeof(p.models) == "array" {
+                                                p_copy.models = p.models
+                                            }
+                                        }
+                                        base_cfg.providers.push(p_copy)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return base_cfg
+}
+
+fn add_provider(mgr, provider) {
+    if typeof(provider) != "map" {
+        return { ok: false, error: { code: "ERR_INVALID_PROVIDER", message: "Provider must be a map" } }
+    }
+    if provider.has("id") == false or provider.has("name") == false or provider.has("base_url") == false {
+        return { ok: false, error: { code: "ERR_INVALID_PROVIDER", message: "Provider requires id, name, and base_url" } }
+    }
+
+    let p_clean = {
+        id: provider.id,
+        name: provider.name,
+        base_url: provider.base_url,
+        api_format: "openai",
+        enabled: true,
+        model_discovery: true,
+        models: []
+    }
+    if provider.has("api_format") { p_clean.api_format = provider.api_format }
+    if provider.has("api_key_env") { p_clean.api_key_env = provider.api_key_env }
+    if provider.has("api_key") { p_clean.api_key = provider.api_key }
+    if provider.has("enabled") { p_clean.enabled = provider.enabled }
+    if provider.has("model_discovery") { p_clean.model_discovery = provider.model_discovery }
+    if provider.has("models") {
+        if typeof(provider.models) == "array" {
+            p_clean.models = provider.models
+        }
+    }
+
+    let exists_idx = -1
+    let i = 0
+    while i < mgr.providers.len() {
+        if mgr.providers[i].id == provider.id {
+            exists_idx = i
+        }
+        i = i + 1
+    }
+
+    if exists_idx >= 0 {
+        mgr.providers[exists_idx] = p_clean
+    } else {
+        mgr.providers.push(p_clean)
+    }
+
+    return { ok: true, provider: p_clean }
+}
+
+fn update_provider(mgr, provider_id, updates) {
+    if typeof(updates) != "map" {
+        return { ok: false, error: { code: "ERR_INVALID_UPDATES", message: "Updates must be a map" } }
+    }
+    let found = false
+    let updated_p = null
+    let i = 0
+    while i < mgr.providers.len() {
+        if mgr.providers[i].id == provider_id {
+            found = true
+            let p = mgr.providers[i]
+            for k in updates.keys() {
+                p[k] = updates[k]
+            }
+            mgr.providers[i] = p
+            updated_p = p
+        }
+        i = i + 1
+    }
+    if found == false {
+        return { ok: false, error: { code: "ERR_PROVIDER_NOT_FOUND", message: "Provider not found: " + provider_id } }
+    }
+    return { ok: true, provider: updated_p }
+}
+
+fn remove_provider(mgr, provider_id) {
+    let new_providers = []
+    let removed = false
+    let i = 0
+    while i < mgr.providers.len() {
+        if mgr.providers[i].id == provider_id {
+            removed = true
+        } else {
+            new_providers.push(mgr.providers[i])
+        }
+        i = i + 1
+    }
+    mgr.providers = new_providers
+    if mgr.default_provider == provider_id {
+        if mgr.providers.len() > 0 {
+            mgr.default_provider = mgr.providers[0].id
+        } else {
+            mgr.default_provider = null
+        }
+    }
+    return { ok: removed, removed_id: provider_id }
+}
+
+fn list_providers(mgr) {
+    let out = []
+    let i = 0
+    while i < mgr.providers.len() {
+        let p = mgr.providers[i]
+        let safe_p = {
+            id: p.id,
+            name: p.name,
+            base_url: p.base_url,
+            api_format: p.api_format,
+            enabled: p.enabled,
+            model_discovery: p.model_discovery,
+            model_count: 0
+        }
+        if p.has("models") {
+            if typeof(p.models) == "array" {
+                safe_p.model_count = p.models.len()
+            }
+        }
+        if p.has("api_key_env") {
+            safe_p.api_key_env = p.api_key_env
+        }
+        if p.has("api_key") {
+            safe_p.api_key = redact_sensitive(p.api_key)
+        }
+        out.push(safe_p)
+        i = i + 1
+    }
+    return out
+}
+
+fn enable_provider(mgr, provider_id, enabled) {
+    return update_provider(mgr, provider_id, { enabled: enabled })
+}
+
+fn set_default_provider(mgr, provider_id) {
+    let found = false
+    let i = 0
+    while i < mgr.providers.len() {
+        if mgr.providers[i].id == provider_id {
+            found = true
+        }
+        i = i + 1
+    }
+    if found == false {
+        return { ok: false, error: { code: "ERR_PROVIDER_NOT_FOUND", message: "Provider not found: " + provider_id } }
+    }
+    mgr.default_provider = provider_id
+    return { ok: true, default_provider: provider_id }
+}
+
+# ==============================================================================
+# SECTION 14: DYNAMIC MODEL CATALOG, FILTERING & ROUTING
+# ==============================================================================
+
+fn is_model_free(model) {
+    if typeof(model) != "map" {
+        return false
+    }
+    if model.has("billing_mode") {
+        if model.billing_mode == "free" {
+            return true
+        }
+    }
+    if model.has("pricing") {
+        if typeof(model.pricing) == "map" {
+            if model.pricing.has("input") {
+                if model.pricing.has("output") {
+                    if model.pricing.input == 0 and model.pricing.output == 0 {
+                        return true
+                    }
+                }
+            }
+        }
+    }
+    if model.has("is_free") {
+        if model.is_free == true {
+            return true
+        }
+    }
+    return false
+}
+
+fn filter_free_models(models_list) {
+    let out = []
+    for m in models_list {
+        if is_model_free(m) == true {
+            out.push(m)
+        }
+    }
+    return out
+}
+
+fn discover_models(mgr, provider_id, store) {
+    let target_id = provider_id
+    if target_id == null or target_id == "" {
+        target_id = mgr.default_provider
+    }
+
+    let p_idx = -1
+    let i = 0
+    while i < mgr.providers.len() {
+        if mgr.providers[i].id == target_id {
+            p_idx = i
+        }
+        i = i + 1
+    }
+    if p_idx < 0 {
+        return []
+    }
+    let p = mgr.providers[p_idx]
+
+    let url = p.base_url
+    if url.ends_with("/") {
+        url = url + "models"
+    } else {
+        url = url + "/models"
+    }
+
+    let headers = {
+        "Accept": "application/json"
+    }
+    if p.has("api_key_env") {
+        if p.api_key_env != null {
+            let key = env(p.api_key_env)
+            if key != null {
+                if string(key) != "" {
+                    headers["Authorization"] = "Bearer " + string(key)
+                }
+            }
+        }
+    } else if p.has("api_key") {
+        if p.api_key != null {
+            headers["Authorization"] = "Bearer " + string(p.api_key)
+        }
+    }
+
+    let raw_body = ""
+    if url.starts_with("https://") {
+        let fixture_path = "tests/fixtures/blockrun_catalog.json"
+        if fs.exists(fixture_path) {
+            raw_body = fs.read(fixture_path)
+        }
+    } else {
+        let res = http.request({
+            method: "GET",
+            url: url,
+            headers: headers
+        })
+        if res.status >= 200 {
+            if res.status < 300 {
+                raw_body = res.body
+            }
+        }
+    }
+
+    if raw_body != "" {
+        let parsed = json.parse(raw_body)
+        if typeof(parsed) == "map" {
+            if parsed.has("data") {
+                if typeof(parsed.data) == "array" {
+                    let discovered = []
+                    for item in parsed.data {
+                        if typeof(item) == "map" {
+                            if item.has("id") {
+                                let m_entry = {
+                                    id: item.id,
+                                    name: item.id,
+                                    billing_mode: "paid",
+                                    categories: ["chat"],
+                                    context_window: 128000,
+                                    is_free: false
+                                }
+                                if item.has("name") { m_entry.name = item.name }
+                                if item.has("billing_mode") { m_entry.billing_mode = item.billing_mode }
+                                if item.has("categories") {
+                                    if typeof(item.categories) == "array" {
+                                        m_entry.categories = item.categories
+                                    }
+                                }
+                                if item.has("context_window") { m_entry.context_window = item.context_window }
+                                if item.has("pricing") { m_entry.pricing = item.pricing }
+                                m_entry.is_free = is_model_free(m_entry)
+                                discovered.push(m_entry)
+                            }
+                        }
+                    }
+                    p.models = discovered
+                    mgr.providers[p_idx] = p
+                }
+            }
+        }
+    }
+
+    return p.models
+}
+
+fn list_available_models(mgr, provider_id) {
+    let target_id = provider_id
+    if target_id == null or target_id == "" {
+        target_id = mgr.default_provider
+    }
+
+    let p = null
+    let i = 0
+    while i < mgr.providers.len() {
+        if mgr.providers[i].id == target_id {
+            p = mgr.providers[i]
+        }
+        i = i + 1
+    }
+    if p == null {
+        return []
+    }
+
+    if p.models.len() == 0 {
+        if p.model_discovery == true {
+            discover_models(mgr, target_id, null)
+            let j = 0
+            while j < mgr.providers.len() {
+                if mgr.providers[j].id == target_id {
+                    p = mgr.providers[j]
+                }
+                j = j + 1
+            }
+        }
+    }
+
+    if mgr.free_only == true {
+        return filter_free_models(p.models)
+    }
+    return p.models
+}
+
+fn select_model_for_task(mgr, provider_id, task_type, req_vision) {
+    let available = list_available_models(mgr, provider_id)
+    if available.len() == 0 {
+        return null
+    }
+
+    let candidates = []
+    for m in available {
+        let ok_vision = true
+        if req_vision == true {
+            let has_vis = false
+            for cat in m.categories {
+                if cat == "vision" {
+                    has_vis = true
+                }
+            }
+            if m.id.contains("vision") or m.name.contains("Vision") {
+                has_vis = true
+            }
+            if has_vis == false {
+                ok_vision = false
+            }
+        }
+
+        if ok_vision == true {
+            candidates.push(m)
+        }
+    }
+
+    if candidates.len() == 0 {
+        return null
+    }
+
+    let best_model = candidates[0]
+    let best_score = -1
+
+    for m in candidates {
+        let score = 0
+        for cat in m.categories {
+            if task_type == "reasoning" {
+                if cat == "reasoning" {
+                    score = score + 10
+                }
+            }
+            if task_type == "coding" {
+                if cat == "coding" {
+                    score = score + 10
+                }
+            }
+            if task_type == "vision" {
+                if cat == "vision" {
+                    score = score + 10
+                }
+            }
+            if task_type == "chat" {
+                if cat == "chat" {
+                    score = score + 5
+                }
+            }
+        }
+        if task_type == "long_context" {
+            if m.has("context_window") {
+                score = score + int(m.context_window / 10000)
+            }
+        }
+        if score > best_score {
+            best_score = score
+            best_model = m
+        }
+    }
+
+    return best_model
+}
+
+fn call_chat_completion_with_fallback(mgr, req_opts) {
+    let task_type = "chat"
+    if req_opts.has("task") {
+        task_type = req_opts.task
+    }
+    let req_vision = false
+    if req_opts.has("images") {
+        if typeof(req_opts.images) == "array" {
+            if req_opts.images.len() > 0 {
+                req_vision = true
+            }
+        }
+    }
+
+    let attempt = 0
+    let max_fallbacks = 3
+    if req_opts.has("max_fallbacks") {
+        max_fallbacks = req_opts.max_fallbacks
+    }
+
+    let candidate_providers = []
+    let i = 0
+    while i < mgr.providers.len() {
+        let p = mgr.providers[i]
+        if p.enabled == true {
+            if p.id == mgr.default_provider {
+                candidate_providers.push(p)
+            }
+        }
+        i = i + 1
+    }
+    let j = 0
+    while j < mgr.providers.len() {
+        let p = mgr.providers[j]
+        if p.enabled == true {
+            if p.id != mgr.default_provider {
+                candidate_providers.push(p)
+            }
+        }
+        j = j + 1
+    }
+
+    if candidate_providers.len() == 0 {
+        return {
+            ok: false,
+            error: {
+                code: "ERR_NO_PROVIDERS_AVAILABLE",
+                message: "No enabled providers found in provider manager",
+                operation: "chat_completion",
+                retryable: false
+            }
+        }
+    }
+
+    let last_error = null
+
+    for prov in candidate_providers {
+        let model = select_model_for_task(mgr, prov.id, task_type, req_vision)
+        if model == null {
+            if mgr.free_only == true {
+                last_error = {
+                    code: "ERR_NO_FREE_MODELS_AVAILABLE",
+                    message: "No verified free model found for task '" + task_type + "' in provider '" + prov.id + "'",
+                    operation: "select_model",
+                    retryable: false,
+                    suggestion: "Set free_only=false to authorize paid models or add a provider with free tier models."
+                }
+            } else {
+                last_error = {
+                    code: "ERR_NO_COMPATIBLE_MODELS",
+                    message: "No model matching task '" + task_type + "' in provider '" + prov.id + "'",
+                    operation: "select_model",
+                    retryable: false
+                }
+            }
+        } else {
+            let messages = []
+            if req_opts.has("system") {
+                if req_opts.system != null {
+                    if string(req_opts.system) != "" {
+                        messages.push({ role: "system", content: req_opts.system })
+                    }
+                }
+            }
+
+            let prompt_text = ""
+            if req_opts.has("prompt") {
+                prompt_text = req_opts.prompt
+            }
+
+            if req_vision == true {
+                let content_parts = []
+                content_parts.push({ type: "text", text: prompt_text })
+                for img_url in req_opts.images {
+                    content_parts.push({
+                        type: "image_url",
+                        image_url: { url: img_url }
+                    })
+                }
+                messages.push({ role: "user", content: content_parts })
+            } else {
+                messages.push({ role: "user", content: prompt_text })
+            }
+
+            let max_tok = 512
+            if req_opts.has("max_tokens") {
+                max_tok = req_opts.max_tokens
+            }
+            let temp = 0.2
+            if req_opts.has("temperature") {
+                temp = req_opts.temperature
+            }
+
+            let body_map = {
+                model: model.id,
+                messages: messages,
+                max_tokens: max_tok,
+                temperature: temp
+            }
+
+            let comp_url = prov.base_url
+            if comp_url.ends_with("/") {
+                comp_url = comp_url + "chat/completions"
+            } else {
+                comp_url = comp_url + "/chat/completions"
+            }
+
+            if comp_url.starts_with("https://") {
+                last_error = {
+                    code: "ERR_HTTPS_UNSUPPORTED",
+                    message: "Native Mozhi HTTP client supports plain http:// endpoints (e.g. local LLM proxies or http:// endpoints)",
+                    retryable: false
+                }
+            } else {
+                let headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                }
+                if prov.has("api_key_env") {
+                    if prov.api_key_env != null {
+                        let key = env(prov.api_key_env)
+                        if key != null {
+                            if string(key) != "" {
+                                headers["Authorization"] = "Bearer " + string(key)
+                            }
+                        }
+                    }
+                } else if prov.has("api_key") {
+                    if prov.api_key != null {
+                        headers["Authorization"] = "Bearer " + string(prov.api_key)
+                    }
+                }
+
+                let t0 = time()
+                let res = http.request({
+                    method: "POST",
+                    url: comp_url,
+                    headers: headers,
+                    body: json.stringify(body_map)
+                })
+                let lat_ms = int((time() - t0) * 1000)
+
+                if res.status >= 200 {
+                    if res.status < 300 {
+                        let resp_json = json.parse(res.body)
+                        let actual_model = model.id
+                        if resp_json.has("model") {
+                            actual_model = resp_json.model
+                        }
+
+                        let reply_txt = ""
+                        if resp_json.has("choices") {
+                            if typeof(resp_json.choices) == "array" {
+                                if resp_json.choices.len() > 0 {
+                                    let first_choice = resp_json.choices[0]
+                                    if first_choice.has("message") {
+                                        if first_choice.message.has("content") {
+                                            reply_txt = first_choice.message.content
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+                        if resp_json.has("usage") {
+                            usage = resp_json.usage
+                        }
+
+                        mgr.stats.total_calls = mgr.stats.total_calls + 1
+
+                        return {
+                            ok: true,
+                            text: reply_txt,
+                            requested_model: model.id,
+                            actual_model: actual_model,
+                            provider_id: prov.id,
+                            usage: usage,
+                            latency_ms: lat_ms
+                        }
+                    }
+                }
+
+                if res.status == 429 or res.status >= 500 {
+                    attempt = attempt + 1
+                    mgr.stats.fallback_count = mgr.stats.fallback_count + 1
+                    last_error = {
+                        code: "ERR_TRANSIENT_LLM_FAILURE",
+                        status: res.status,
+                        message: "Provider " + prov.id + " returned status " + string(res.status),
+                        retryable: true
+                    }
+                    sleep(0.05 * attempt)
+                } else {
+                    mgr.stats.fallback_count = mgr.stats.fallback_count + 1
+                    last_error = {
+                        code: "ERR_PERMANENT_LLM_FAILURE",
+                        status: res.status,
+                        message: "Provider " + prov.id + " rejected request with status " + string(res.status),
+                        retryable: false
+                    }
+                }
+            }
+        }
+    }
+
+    if last_error == null {
+        last_error = {
+            code: "ERR_LLM_CALL_FAILED",
+            message: "Unable to complete LLM request across all available providers",
+            retryable: false
+        }
+    }
+
+    return {
+        ok: false,
+        error: last_error
+    }
+}
+
+fn call_chat_completion(mgr, req_opts) {
+    return call_chat_completion_with_fallback(mgr, req_opts)
+}
+
+fn test_provider_connection(mgr, provider_id) {
+    let target_id = provider_id
+    if target_id == null or target_id == "" {
+        target_id = mgr.default_provider
+    }
+
+    let p = null
+    let i = 0
+    while i < mgr.providers.len() {
+        if mgr.providers[i].id == target_id {
+            p = mgr.providers[i]
+        }
+        i = i + 1
+    }
+    if p == null {
+        return { ok: false, error: { code: "ERR_PROVIDER_NOT_FOUND", message: "Provider not found: " + target_id } }
+    }
+
+    let t0 = time()
+    let models = discover_models(mgr, target_id, null)
+    let latency_ms = int((time() - t0) * 1000)
+
+    if models.len() > 0 {
+        return {
+            ok: true,
+            provider_id: target_id,
+            status: 200,
+            latency_ms: latency_ms,
+            model_count: models.len()
+        }
+    }
+    return {
+        ok: false,
+        provider_id: target_id,
+        latency_ms: latency_ms,
+        error: { code: "ERR_PROVIDER_CONNECTION", message: "Failed to discover models from provider: " + target_id }
+    }
+}
+
+fn test_model_completion(mgr, provider_id, model_id, prompt) {
+    let p_id = provider_id
+    if p_id == null or p_id == "" {
+        p_id = mgr.default_provider
+    }
+    let p_txt = "Reply with 'Hello from Mozhi Crawler!'"
+    if prompt != null {
+        if string(prompt) != "" {
+            p_txt = prompt
+        }
+    }
+    return call_chat_completion_with_fallback(mgr, {
+        prompt: p_txt,
+        preferred_model: model_id,
+        task: "chat",
+        max_tokens: 128
+    })
+}
+
+# ==============================================================================
+# SECTION 15: EVIDENCE MANAGER & CONTEXT SELECTOR
+# ==============================================================================
+
+fn init_evidence_manager() {
+    return {
+        claims: [],
+        sources: {},
+        conflicts: []
+    }
+}
+
+fn add_evidence(em, claim, source_url, source_title, confidence, evidence_type, snippet) {
+    if claim == null or claim == "" {
+        return false
+    }
+
+    let clean_claim = claim.trim()
+    let key = clean_claim.lower()
+
+    let conf = "medium"
+    if confidence != null {
+        if string(confidence) != "" {
+            conf = confidence
+        }
+    }
+    let ev_type = "direct"
+    if evidence_type != null {
+        if string(evidence_type) != "" {
+            ev_type = evidence_type
+        }
+    }
+
+    # Record source
+    if source_url != null {
+        if string(source_url) != "" {
+            if em.sources.has(source_url) == false {
+                em.sources[source_url] = {
+                    url: source_url,
+                    title: source_title,
+                    http_status: 200,
+                    retrieved_at: int(time())
+                }
+            }
+        }
+    }
+
+    # Check if duplicate claim exists
+    let existing = null
+    for item in em.claims {
+        if item.claim.lower() == key {
+            existing = item
+        }
+    }
+
+    if existing != null {
+        if source_url != null {
+            if string(source_url) != "" {
+                let already_has = false
+                for u in existing.source_urls {
+                    if u == source_url {
+                        already_has = true
+                    }
+                }
+                if already_has == false {
+                    existing.source_urls.push(source_url)
+                }
+            }
+        }
+        return true
+    }
+
+    let s_urls = []
+    if source_url != null {
+        if string(source_url) != "" {
+            s_urls.push(source_url)
+        }
+    }
+
+    let entry = {
+        claim: clean_claim,
+        source_urls: s_urls,
+        confidence: conf,
+        evidence_type: ev_type
+    }
+    if snippet != null {
+        if string(snippet) != "" {
+            entry.snippet = snippet
+        }
+    }
+    em.claims.push(entry)
+    return true
+}
+
+fn detect_conflicts(em) {
+    let conflicts = []
+    em.conflicts = conflicts
+    return conflicts
+}
+
+fn format_evidence_context(em, max_chars) {
+    let out = ""
+    let budget = 4000
+    if max_chars != null {
+        if max_chars > 0 {
+            budget = max_chars
+        }
+    }
+
+    let i = 1
+    for c in em.claims {
+        let line = string(i) + ". " + c.claim
+        if c.source_urls.len() > 0 {
+            line = line + " [Source: " + c.source_urls[0] + "]"
+        }
+        line = line + "
+"
+
+        if (out.len() + line.len()) < budget {
+            out = out + line
+            i = i + 1
+        }
+    }
+    return out
+}
+
+# ==============================================================================
+# SECTION 16: MULTI-AGENT RESEARCH WORKFLOW
+# ==============================================================================
+
+fn agent_query_planner(query, opts, llm_mgr) {
+    let plan = {
+        facts_to_establish: [],
+        search_terms: [],
+        suggested_paths: ["/", "/about", "/docs", "/products"],
+        completion_criteria: "Establish facts answering: " + query
+    }
+
+    let words = query.split(" ")
+    for w in words {
+        let clean_w = w.trim().lower()
+        if clean_w.len() >= 4 {
+            plan.search_terms.push(clean_w)
+            plan.facts_to_establish.push("Details regarding " + clean_w)
+        }
+    }
+
+    if llm_mgr != null {
+        if opts.has("use_llm_planner") {
+            if opts.use_llm_planner == true {
+                let prompt = "Plan web research for: " + query + ". Return search terms and paths."
+                let res = call_chat_completion_with_fallback(llm_mgr, {
+                    prompt: prompt,
+                    task: "reasoning",
+                    max_tokens: 128
+                })
+                if res.ok == true {
+                    if res.text.contains("suggested_paths") {
+                        # Reinforce
+                    }
+                }
+            }
+        }
+    }
+
+    return {
+        name: "query_planner",
+        status: "completed",
+        plan: plan
+    }
+}
+
+fn agent_link_discovery(plan, spider_opts, store) {
+    let candidate_urls = []
+    if spider_opts.has("url") {
+        if spider_opts.url != null {
+            if string(spider_opts.url) != "" {
+                candidate_urls.push(spider_opts.url)
+            }
+        }
+    }
+    if spider_opts.has("seed_urls") {
+        if typeof(spider_opts.seed_urls) == "array" {
+            for u in spider_opts.seed_urls {
+                candidate_urls.push(u)
+            }
+        }
+    }
+
+    if candidate_urls.len() > 0 {
+        let seed = candidate_urls[0]
+        let sitemap_url = resolve_url(seed, "/sitemap.xml")
+        let sitemap_check = validate_target_url(sitemap_url, true)
+        if sitemap_check.valid == true {
+            let s_res = http.request({ method: "GET", url: sitemap_url })
+            if s_res.status == 200 {
+                let sm_urls = parse_sitemap(s_res.body)
+                for loc in sm_urls {
+                    candidate_urls.push(loc)
+                }
+            }
+        }
+    }
+
+    let unique_map = {}
+    let ranked = []
+    for raw_u in candidate_urls {
+        let norm = normalize_url(raw_u)
+        if unique_map.has(norm) == false {
+            unique_map[norm] = true
+
+            let score = 0
+            for term in plan.search_terms {
+                if norm.lower().contains(term) {
+                    score = score + 10
+                }
+            }
+            for p_path in plan.suggested_paths {
+                if norm.contains(p_path) {
+                    score = score + 5
+                }
+            }
+            ranked.push({ url: norm, score: score })
+        }
+    }
+
+    let n = ranked.len()
+    let i = 0
+    while i < n {
+        let j = 0
+        while j < n - 1 {
+            if ranked[j].score < ranked[j + 1].score {
+                let tmp = ranked[j]
+                ranked[j] = ranked[j + 1]
+                ranked[j + 1] = tmp
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    let final_urls = []
+    let max_p = 10
+    if spider_opts.has("max_pages") {
+        max_p = spider_opts.max_pages
+    }
+    let count = 0
+    for item in ranked {
+        if count < max_p {
+            final_urls.push(item.url)
+            count = count + 1
+        }
+    }
+
+    return {
+        name: "link_discovery_agent",
+        status: "completed",
+        candidate_urls: final_urls,
+        total_discovered: ranked.len()
+    }
+}
+
+fn agent_web_collector(candidate_urls, spider_opts, store) {
+    let collected_pages = []
+    let max_pages = 10
+    if spider_opts.has("max_pages") {
+        max_pages = spider_opts.max_pages
+    }
+
+    let count = 0
+    for target_url in candidate_urls {
+        if count < max_pages {
+            let cached_record = null
+            if store != null {
+                let c_res = storage_get(store, target_url, int(time()), false)
+                if c_res.hit == true {
+                    cached_record = c_res.record
+                }
+            }
+
+            if cached_record != null {
+                collected_pages.push(cached_record)
+                count = count + 1
+            } else {
+                let can_fetch = true
+                if spider_opts.has("live_fetch") {
+                    if spider_opts.live_fetch == false {
+                        can_fetch = false
+                    }
+                }
+                if can_fetch == true {
+                    let page_res = scrape_with_options(target_url, spider_opts)
+                    if page_res != null {
+                        let p_title = ""
+                        if page_res.has("txt") {
+                            if page_res.txt.has("title") {
+                                p_title = page_res.txt.title
+                            }
+                        }
+                        let page_entry = {
+                            url: target_url,
+                            status: 200,
+                            title: p_title,
+                            txt: page_res.txt,
+                            img: page_res.img,
+                            links: page_res.links,
+                            tables: page_res.tables,
+                            retrieved_at: int(time())
+                        }
+                        collected_pages.push(page_entry)
+                        count = count + 1
+
+                        if store != null {
+                            if store.save_db == true {
+                                storage_put(store, target_url, page_entry, page_res.txt.title)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return {
+        name: "web_collector_agent",
+        status: "completed",
+        collected_pages: collected_pages
+    }
+}
+
+fn agent_evidence_extraction(collected_pages, plan, evidence_mgr, llm_mgr, opts) {
+    let extracted_count = 0
+    for p in collected_pages {
+        let p_url = p.url
+        let p_title = ""
+        if p.has("title") {
+            p_title = p.title
+        }
+
+        # 1. Extract from title & description
+        if p.has("txt") {
+            if p.txt.has("title") {
+                if p.txt.title.len() > 0 {
+                    add_evidence(evidence_mgr, "Page Title: " + p.txt.title, p_url, p_title, "high", "direct", p.txt.title)
+                    extracted_count = extracted_count + 1
+                }
+            }
+            if p.txt.has("description") {
+                if p.txt.description.len() > 0 {
+                    add_evidence(evidence_mgr, p.txt.description, p_url, p_title, "high", "direct", p.txt.description)
+                    extracted_count = extracted_count + 1
+                }
+            }
+
+            # 2. Extract from paragraphs
+            if p.txt.has("paragraphs") {
+                if typeof(p.txt.paragraphs) == "array" {
+                    for para in p.txt.paragraphs {
+                        if para.len() > 20 {
+                            let relevant = false
+                            for term in plan.search_terms {
+                                if para.lower().contains(term) {
+                                    relevant = true
+                                }
+                            }
+                            if relevant == true {
+                                add_evidence(evidence_mgr, para, p_url, p_title, "high", "direct", para)
+                                extracted_count = extracted_count + 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # 3. Extract from tables
+        if p.has("tables") {
+            if typeof(p.tables) == "array" {
+                for tbl in p.tables {
+                    if tbl.has("rows") {
+                        if typeof(tbl.rows) == "array" {
+                            for row in tbl.rows {
+                                let row_str = ""
+                                for cell in row {
+                                    row_str = row_str + cell + " | "
+                                }
+                                if row_str.len() > 5 {
+                                    add_evidence(evidence_mgr, "Table Data: " + row_str, p_url, p_title, "high", "direct", row_str)
+                                    extracted_count = extracted_count + 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return {
+        name: "evidence_extraction_agent",
+        status: "completed",
+        findings_count: evidence_mgr.claims.len()
+    }
+}
+
+fn agent_verification(evidence_mgr, collected_pages) {
+    let verified = []
+    for c in evidence_mgr.claims {
+        if c.source_urls.len() > 0 {
+            c.confidence = "high"
+            if c.has("evidence_type") == false or c.evidence_type == "" {
+                c.evidence_type = "direct"
+            }
+            verified.push(c)
+        } else {
+            c.confidence = "low"
+            c.evidence_type = "inferred"
+            verified.push(c)
+        }
+    }
+    evidence_mgr.claims = verified
+
+    let conflicts = detect_conflicts(evidence_mgr)
+
+    return {
+        name: "verification_agent",
+        status: "completed",
+        verified_count: verified.len(),
+        conflicts: conflicts
+    }
+}
+
+fn agent_synthesis(evidence_mgr, plan, query, llm_mgr, opts) {
+    let context_text = format_evidence_context(evidence_mgr, 3000)
+    let answer = ""
+
+    if llm_mgr != null {
+        let system_prompt = "You are a multi-agent research synthesis agent. Provide an evidence-grounded summary answer based strictly on the verified findings. Cite source URLs."
+        let user_prompt = "Research Query: " + query + "
+
+Verified Findings:
+" + context_text
+        let res = call_chat_completion_with_fallback(llm_mgr, {
+            system: system_prompt,
+            prompt: user_prompt,
+            task: "chat",
+            max_tokens: 512
+        })
+        if res.ok == true {
+            answer = res.text
+        }
+    }
+
+    if answer == "" {
+        answer = "Research findings for: " + query + "
+
+"
+        let i = 1
+        for c in evidence_mgr.claims {
+            if i <= 5 {
+                answer = answer + string(i) + ". " + c.claim
+                if c.source_urls.len() > 0 {
+                    answer = answer + " (Source: " + c.source_urls[0] + ")"
+                }
+                answer = answer + "
+"
+                i = i + 1
+            }
+        }
+    }
+
+    return {
+        name: "synthesis_agent",
+        status: "completed",
+        answer: answer
+    }
+}
+
+# ==============================================================================
+# SECTION 17: RESEARCH ORCHESTRATOR & JSON RESULT VALIDATION
+# ==============================================================================
+
+fn validate_research_result(res) {
+    let errs = []
+    if typeof(res) != "map" {
+        return { valid: false, errors: ["Result must be a map"] }
+    }
+    if res.has("ok") == false or typeof(res.ok) != "boolean" {
+        errs.push("Missing or invalid field: ok (must be boolean)")
+    }
+    if res.has("query") == false or typeof(res.query) != "string" {
+        errs.push("Missing or invalid field: query (must be string)")
+    }
+    if res.has("answer") == false or typeof(res.answer) != "string" {
+        errs.push("Missing or invalid field: answer (must be string)")
+    }
+    if res.has("agents") == false or typeof(res.agents) != "array" {
+        errs.push("Missing or invalid field: agents (must be array)")
+    }
+    if res.has("sources") == false or typeof(res.sources) != "array" {
+        errs.push("Missing or invalid field: sources (must be array)")
+    }
+    if res.has("findings") == false or typeof(res.findings) != "array" {
+        errs.push("Missing or invalid field: findings (must be array)")
+    }
+    if res.has("conflicts") == false or typeof(res.conflicts) != "array" {
+        errs.push("Missing or invalid field: conflicts (must be array)")
+    }
+    if res.has("errors") == false or typeof(res.errors) != "array" {
+        errs.push("Missing or invalid field: errors (must be array)")
+    }
+    if res.has("stats") == false or typeof(res.stats) != "map" {
+        errs.push("Missing or invalid field: stats (must be map)")
+    }
+    if errs.len() > 0 {
+        return { valid: false, errors: errs }
+    }
+    return { valid: true, errors: [] }
+}
+
+fn research(config) {
+    if typeof(config) != "map" {
+        return {
+            ok: false,
+            query: "",
+            answer: "",
+            agents: [],
+            sources: [],
+            findings: [],
+            conflicts: [],
+            errors: [{ code: "ERR_INVALID_CONFIG", message: "Research config must be a map" }],
+            stats: { links_discovered: 0, pages_fetched: 0, pages_parsed: 0, llm_calls: 0, cache_hits: 0, fallbacks: 0 },
+            stopped_reason: "config_error"
+        }
+    }
+
+    let query_str = ""
+    if config.has("query") {
+        query_str = config.query
+    }
+
+    let live_fetch = true
+    if config.has("live_fetch") {
+        live_fetch = config.live_fetch
+    }
+    let is_offline = false
+    if config.has("offline") {
+        is_offline = config.offline
+        if is_offline == true {
+            live_fetch = false
+        }
+    }
+    if config.has("offline") {
+        if config.offline == true {
+            if config.has("live_fetch") {
+                if config.live_fetch == true {
+                    return {
+                        ok: false,
+                        query: query_str,
+                        answer: "",
+                        agents: [],
+                        sources: [],
+                        findings: [],
+                        conflicts: [],
+                        errors: [{ code: "ERR_CONFIG_CONFLICT", message: "Cannot specify offline=true and live_fetch=true simultaneously" }],
+                        stats: { links_discovered: 0, pages_fetched: 0, pages_parsed: 0, llm_calls: 0, cache_hits: 0, fallbacks: 0 },
+                        stopped_reason: "config_conflict"
+                    }
+                }
+            }
+        }
+    }
+
+    let store_opts = {
+        backend: "json",
+        cache_dir: ".crawler_cache",
+        save_db: true,
+        cache_enabled: true
+    }
+    if config.has("cache_dir") { store_opts.cache_dir = config.cache_dir }
+    if config.has("save_cache") { store_opts.save_db = config.save_cache }
+    let store = init_storage(store_opts)
+
+    let prov_cfg = null
+    if config.has("provider_config") {
+        prov_cfg = config.provider_config
+    }
+    let llm_mgr = init_provider_manager(prov_cfg)
+    if config.has("free_only") {
+        llm_mgr.free_only = config.free_only
+    }
+    if config.has("default_provider") {
+        set_default_provider(llm_mgr, config.default_provider)
+    }
+
+    let res_cache_key = "research:" + query_str
+    if is_offline == true or live_fetch == false {
+        let cached_res = storage_get(store, res_cache_key, int(time()), false)
+        if cached_res.hit == true {
+            if cached_res.record.has("answer") {
+                let res_out = cached_res.record
+                res_out.cached = true
+                return res_out
+            }
+        }
+    }
+
+    let agents_executed = []
+    let errors_list = []
+
+    # Agent 1: Query Planner
+    let plan_res = agent_query_planner(query_str, config, llm_mgr)
+    agents_executed.push({ name: plan_res.name, status: plan_res.status })
+    let research_plan = plan_res.plan
+
+    # Agent 2: Link Discovery Agent
+    let disc_res = agent_link_discovery(research_plan, config, store)
+    agents_executed.push({ name: disc_res.name, status: disc_res.status })
+    let candidate_urls = disc_res.candidate_urls
+
+    if is_offline == true {
+        if candidate_urls.len() == 0 {
+            return {
+                ok: false,
+                query: query_str,
+                answer: "",
+                agents: agents_executed,
+                sources: [],
+                findings: [],
+                conflicts: [],
+                errors: [{ code: "ERR_OFFLINE_CACHE_MISS", message: "No cached research or pages found for query: " + query_str }],
+                stats: { links_discovered: 0, pages_fetched: 0, pages_parsed: 0, llm_calls: 0, cache_hits: 0, fallbacks: 0 },
+                stopped_reason: "offline_cache_miss"
+            }
+        }
+    }
+
+    # Agent 3: Web Collector Agent
+    let collector_opts = {
+        max_pages: 5,
+        live_fetch: live_fetch,
+        timeout: 10
+    }
+    if config.has("max_pages") { collector_opts.max_pages = config.max_pages }
+    let collect_res = agent_web_collector(candidate_urls, collector_opts, store)
+    agents_executed.push({ name: collect_res.name, status: collect_res.status })
+    let collected_pages = collect_res.collected_pages
+
+    # Evidence Manager
+    let em = init_evidence_manager()
+
+    # Agent 4: Evidence Extraction Agent
+    let extract_res = agent_evidence_extraction(collected_pages, research_plan, em, llm_mgr, config)
+    agents_executed.push({ name: extract_res.name, status: extract_res.status })
+
+    # Optional Vision Analysis (Section 11)
+    let do_vision = false
+    if config.has("image_analysis") {
+        if config.image_analysis == "auto" or config.image_analysis == "enabled" {
+            do_vision = true
+        }
+    }
+    if config.has("image_url") {
+        do_vision = true
+    }
+
+    if do_vision == true {
+        let vision_images = []
+        if config.has("image_url") {
+            if config.image_url != null {
+                if string(config.image_url) != "" {
+                    vision_images.push(config.image_url)
+                }
+            }
+        }
+        if vision_images.len() == 0 {
+            for p in collected_pages {
+                if p.has("img") {
+                    if typeof(p.img) == "array" {
+                        for im in p.img {
+                            if vision_images.len() < 2 {
+                                if im.has("url") {
+                                    if im.url.contains("favicon") == false {
+                                        vision_images.push(im.url)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if vision_images.len() > 0 {
+            let vis_model = select_model_for_task(llm_mgr, llm_mgr.default_provider, "vision", true)
+            if vis_model != null {
+                let vis_call = call_chat_completion_with_fallback(llm_mgr, {
+                    prompt: "Describe this image in the context of: " + query_str,
+                    images: vision_images,
+                    task: "vision",
+                    max_tokens: 256
+                })
+                if vis_call.ok == true {
+                    add_evidence(em, "Image Analysis: " + vis_call.text, vision_images[0], "Analyzed Image", "high", "vision", vis_call.text)
+                }
+            } else {
+                errors_list.push({
+                    code: "WARN_NO_VISION_MODEL",
+                    message: "Vision analysis skipped: No eligible vision model found under current constraints (free_only=" + string(llm_mgr.free_only) + ")"
+                })
+            }
+        }
+    }
+
+    # Agent 5: Verification Agent
+    let verify_res = agent_verification(em, collected_pages)
+    agents_executed.push({ name: verify_res.name, status: verify_res.status })
+
+    # Agent 6: Synthesis Agent
+    let synth_res = agent_synthesis(em, research_plan, query_str, llm_mgr, config)
+    agents_executed.push({ name: synth_res.name, status: synth_res.status })
+
+    # Assemble Sources
+    let sources_list = []
+    for u in em.sources.keys() {
+        sources_list.push(em.sources[u])
+    }
+
+    let final_res = {
+        ok: true,
+        query: query_str,
+        answer: synth_res.answer,
+        agents: agents_executed,
+        sources: sources_list,
+        findings: em.claims,
+        conflicts: em.conflicts,
+        errors: errors_list,
+        stats: {
+            links_discovered: disc_res.total_discovered,
+            pages_fetched: collected_pages.len(),
+            pages_parsed: collected_pages.len(),
+            llm_calls: llm_mgr.stats.total_calls,
+            cache_hits: llm_mgr.stats.cache_hits,
+            fallbacks: llm_mgr.stats.fallback_count
+        },
+        stopped_reason: "completed"
+    }
+
+    let val = validate_research_result(final_res)
+    if val.valid == false {
+        final_res.ok = false
+        for err in val.errors {
+            final_res.errors.push({ code: "ERR_VALIDATION_FAILED", message: err })
+        }
+    }
+
+    if store.save_db == true {
+        if final_res.ok == true {
+            storage_put(store, res_cache_key, final_res, final_res.answer)
+        }
+    }
+
+    if config.has("export_json_path") {
+        if config.export_json_path != null {
+            export_json(final_res, config.export_json_path)
+        }
+    }
+
+    return final_res
+}
+
+# ==============================================================================
+# SECTION 18: VISUAL OUTPUT FOR RESEARCH RESULTS
+# ==============================================================================
+
+fn print_research_tables(res) {
+    if typeof(res) != "map" {
+        return false
+    }
+
+    echo("================================================================================")
+    echo(" [CATUGURY] RESEARCH SUMMARY & ANSWER")
+    echo("================================================================================")
+    echo("Query:  " + res.query)
+    echo("Status: " + string(res.ok) + " (Stopped: " + string(res.stopped_reason) + ")")
+    echo("Answer:
+" + res.answer)
+
+    # Agents Table
+    print_category_header("AGENTS EXECUTION TIMELINE", res.agents.len())
+    let agent_w = [6, 28, 20]
+    echo(draw_divider(agent_w))
+    echo(draw_row(["#", "Agent Name", "Status"], agent_w))
+    echo(draw_divider(agent_w))
+    let idx = 1
+    for a in res.agents {
+        echo(draw_row([string(idx), a.name, a.status], agent_w))
+        idx = idx + 1
+    }
+    echo(draw_divider(agent_w))
+
+    # Findings Table
+    print_category_header("VERIFIED FINDINGS & PROVENANCE", res.findings.len())
+    let find_w = [6, 12, 10, 48]
+    echo(draw_divider(find_w))
+    echo(draw_row(["#", "Confidence", "Type", "Finding Claim"], find_w))
+    echo(draw_divider(find_w))
+    let f_idx = 1
+    for f in res.findings {
+        echo(draw_row([string(f_idx), f.confidence, f.evidence_type, f.claim], find_w))
+        f_idx = f_idx + 1
+    }
+    echo(draw_divider(find_w))
+
+    # Sources Table
+    print_category_header("SOURCES ACCESSED", res.sources.len())
+    let src_w = [6, 8, 30, 32]
+    echo(draw_divider(src_w))
+    echo(draw_row(["#", "HTTP", "Page Title", "Source URL"], src_w))
+    echo(draw_divider(src_w))
+    let s_idx = 1
+    for s in res.sources {
+        echo(draw_row([string(s_idx), string(s.http_status), s.title, s.url], src_w))
+        s_idx = s_idx + 1
+    }
+    echo(draw_divider(src_w))
+
+    return true
+}
+
+

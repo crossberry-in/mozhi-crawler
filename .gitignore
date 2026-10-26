@@ -6,3 +6,4 @@ dist/
 *.csv
 *.json
 *.jsonl
+!tests/fixtures/*.json

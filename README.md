@@ -1,6 +1,6 @@
-# crawler — Production-Ready Web Crawler & Spider Engine for Mozhi
+# crawler — Complete Multi-Agent LLM Research Engine & Web Spider for Mozhi
 
-A general-purpose web crawler, spider, pure DOM tree parser, CSS selector engine, persistent cache, and structured data extractor written **100% in pure Mozhi**. Built exclusively on native Mozhi standard modules (`http`, `json`, `fs`, `db`), with **zero external runtime dependencies** and **built-in SSRF protection**.
+A complete web research, multi-agent synthesis, spider, DOM tree parser, CSS selector engine, and persistent storage subsystem written **100% in pure Mozhi**. Built exclusively on native Mozhi standard modules (`http`, `json`, `fs`, `db`), with **zero external runtime dependencies** (no Python, Node.js, Go, or PHP required) and **built-in SSRF protection**.
 
 [![Release](https://img.shields.io/github/v/release/crossberry-in/mozhi-crawler?color=blue)](https://github.com/crossberry-in/mozhi-crawler/releases)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-1976d2)](https://crossberry-in.github.io/mozhi-crawler/)
@@ -13,78 +13,82 @@ A general-purpose web crawler, spider, pure DOM tree parser, CSS selector engine
 
 ## Architecture & Visual Diagrams
 
-### 1. End-to-End Spider Data Pipeline
+### 1. Multi-Agent Research Workflow
 ```
- +---------------------------------------------------------------------------------------+
- |                                  URL Frontier (BFS Queue)                             |
- +---------------------------------------------------------------------------------------+
-                                            │
-                                            ▼
- +---------------------------------------------------------------------------------------+
- |                     Security & SSRF Validation (RFC 1918 / Loopback)                  |
- +---------------------------------------------------------------------------------------+
-                     │                                              │
-          [Destination Allowed]                             [Blocked / Loopback]
-                     ▼                                              ▼
- +---------------------------------------+                  +----------------------------+
- |      Storage & Cache Decision         |                  |  Return ERR_SSRF_BLOCKED   |
- |  (Live Fetch vs Offline Storage Read) |                  +----------------------------+
- +---------------------------------------+
-                     │
-      ┌──────────────┴──────────────┐
-  [Live Fetch]                 [Offline Cache Read]
-      ▼                             ▼
- [HTTP Request / Redirects]    [Read Stored Record]
-      │                             │
-      └──────────────┬──────────────┘
-                     ▼
- +---------------------------------------------------------------------------------------+
- |                  Pure-Mozhi DOM Tree Parser & CSS Selector Engine                     |
- +---------------------------------------------------------------------------------------+
-                                            │
-                                            ▼
- +---------------------------------------------------------------------------------------+
- |           Structured Extraction (Schema, OpenGraph, JSON-LD, Media & Tables)          |
- +---------------------------------------------------------------------------------------+
-                                            │
-                                            ▼
- +---------------------------------------------------------------------------------------+
- |         Link Graph Engine (Incoming/Outgoing Topology, Cycle & Duplicate Detection)   |
- +---------------------------------------------------------------------------------------+
-                                            │
-                                            ▼
- +---------------------------------------------------------------------------------------+
- |            Multi-Format Exporters (JSON, JSONL, CSV, Link Graph JSON/CSV)             |
- +---------------------------------------------------------------------------------------+
+ +---------------------------------------------------------------------------------------------------+
+ |                                   User Research Query                                             |
+ +---------------------------------------------------------------------------------------------------+
+                                                   │
+                                                   ▼
+ +---------------------------------------------------------------------------------------------------+
+ |                              Agent 1 — Query Planner                                              |
+ |         Identifies key facts to establish, generates search queries, and defines criteria         |
+ +---------------------------------------------------------------------------------------------------+
+                                                   │
+                                                   ▼
+ +---------------------------------------------------------------------------------------------------+
+ |                             Agent 2 — Link Discovery Agent                                        |
+ |    Discovers candidate URLs from seeds, sitemaps, and robots.txt; normalizes and ranks links      |
+ +---------------------------------------------------------------------------------------------------+
+                                                   │
+                                                   ▼
+ +---------------------------------------------------------------------------------------------------+
+ |                             Agent 3 — Web Collection Agent                                        |
+ |     Fetches candidate pages via existing crawler with SSRF checks, parses DOM, extracts tables   |
+ +---------------------------------------------------------------------------------------------------+
+                                                   │
+                                                   ▼
+ +---------------------------------------------------------------------------------------------------+
+ |                            Agent 4 — Evidence Extraction Agent                                    |
+ |       Extracts atomic factual claims from text, tables, and JSON-LD; preserves provenance URLs    |
+ +---------------------------------------------------------------------------------------------------+
+                                                   │
+                                                   ▼
+ +---------------------------------------------------------------------------------------------------+
+ |                            Agent 5 — Research Verification Agent                                  |
+ |           Corroborates claims across sources, evaluates confidence, and detects conflicts         |
+ +---------------------------------------------------------------------------------------------------+
+                                                   │
+                                                   ▼
+ +---------------------------------------------------------------------------------------------------+
+ |                                Agent 6 — Final Synthesis Agent                                    |
+ |      Combines verified evidence, generates summary answer, and structures validated JSON output   |
+ +---------------------------------------------------------------------------------------------------+
+                                                   │
+                                                   ▼
+ +---------------------------------------------------------------------------------------------------+
+ |                        Validated Structured JSON & Terminal Tables                                |
+ +---------------------------------------------------------------------------------------------------+
 ```
 
-### 2. Live Fetch vs Storage Decision Matrix
-
-| Option Combination | Mode Description | Network Requests? | Persists to Disk? | Behavior on Cache Miss |
-|---|---|:---:|:---:|---|
-| `live_fetch: true, save_db: false` | **Live Ephemeral** | **YES** | **NO** | Fetches live data; in-memory only |
-| `live_fetch: true, save_db: true` | **Live & Persist** | **YES** | **YES** | Fetches live, computes fingerprint, writes cache |
-| `live_fetch: false, save_db: false` | **Offline Read** | **NO** | **NO** | Reads previously stored cache record |
-| `live_fetch: false, save_db: true` | **Offline Read** | **NO** | **NO** | Reads stored cache record; never fetches |
-| `offline: true` | **Offline Alias** | **NO** | Configurable | Convenience alias for `live_fetch: false` |
-
+### 2. LLM Provider Management & Strict Free-Model Routing
 ```
-                       [ Incoming Spider Request ]
-                                    │
-                                    ▼
-                     Is offline=true or live_fetch=false?
+                 [ Research Task: e.g. "reasoning" or "vision" ]
+                                        │
+                                        ▼
+                         Is free_only: true active?
+                                   /         \
+                                [YES]        [NO]
+                                 /             \
+                  Filter models where         Allow all enabled
+              billing_mode == "free"          models in catalog
+              or pricing == 0                 (paid tier visible in stats)
+                                 \             /
+                                  ▼           ▼
+                      [ Match Required Task Capabilities ]
+                      (chat, reasoning, coding, vision)
+                                        │
+                         Candidates available?
                                /         \
-                            [YES]        [NO] (Live Fetch Enabled)
+                            [YES]        [NO]
                              /             \
-             Lookup record in cache         Issue HTTP Request (With SSRF checks)
-                 /             \                       │
-             [Found]        [Not Found]         Compute content fingerprint
-               /                 \                     │
-     Return cached page   ERR_OFFLINE_CACHE_MISS       Is save_db=true?
-     (Zero network calls) (Never calls network)      /         \
-                                                  [YES]        [NO]
-                                                   /             \
-                                        Persist to Cache      Return in-memory
+                   Select best model     Return ERR_NO_FREE_MODELS_AVAILABLE
+                   based on score        (Never silently charges paid tier)
+                             │
+                             ▼
+                   [ Execute Completion with Fallback ]
+                   (Transient 429/5xx -> Backoff & Retry or Fallback Provider;
+                    Permanent 401/400 -> Fail immediately or switch provider)
 ```
 
 ---
@@ -92,38 +96,30 @@ A general-purpose web crawler, spider, pure DOM tree parser, CSS selector engine
 ## Features
 
 * **100% Native Pure Mozhi**: Zero external runtimes, Python, Node.js, PHP, or Go bridges. Built strictly on native standard modules (`http`, `json`, `fs`, `db`).
+* **Multi-Agent Research Engine (`crawler.research`)**:
+  * Six specialized agents: Query Planner, Link Discovery, Web Collector, Evidence Extractor, Verifier, and Final Synthesizer.
+  * Preserves source provenance (`url`, `title`, `http_status`, `retrieved_at`) for every factual finding.
+  * Shared resource budgets (`max_agent_calls`, `max_pages`, `max_total_requests`).
+* **Custom LLM Provider Management (`crawler.init_provider_manager`)**:
+  * Configurable OpenAI-compatible endpoints without source code modifications.
+  * Initial support for BlockRun (`https://blockrun.ai/api/v1`) plus custom private/local endpoints (e.g. vLLM, Ollama, LocalAI).
+  * Dynamic model discovery (`GET /models`).
+  * Automatic credential redaction (`[REDACTED]`) across errors, diagnostics, and logs.
+* **Strict Free-Tier Policy (`free_only: true`)**:
+  * Enforces verified free metadata (`billing_mode: "free"` or `$0.00` pricing).
+  * Excludes paid models and halts with `ERR_NO_FREE_MODELS_AVAILABLE` instead of silently charging paid models.
+* **Automatic Fallback & Error Recovery**:
+  * Classifies transient failures (HTTP 429 rate limit, 5xx server error) with exponential backoff and jitter.
+  * Detects permanent errors (HTTP 401 unauthorized, 400 bad request) and fails safely or switches providers.
+* **Vision & Image Understanding**:
+  * Identifies vision-capable models (e.g. `nvidia/llama-3.2-11b-vision`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`).
+  * Submits image URLs via OpenAI message format.
 * **Advanced Web Spider (`crawler.spider`)**:
-  * Breadth-first crawl queue with URL normalization and deduplication.
-  * Per-domain request budgets and page limits (`max_pages_per_domain`, `max_external_domains`).
-  * Hard limits on total HTTP calls (`max_total_requests`), depth (`max_depth`), and pages (`max_pages`).
-  * External link controls: Distinguishes link discovery from link fetching (`same_domain`, `same_origin`).
-  * Incremental change detection via deterministic content fingerprinting (`new`, `unchanged`, `changed`).
-* **Dual Persistent Storage Backends**:
-  * Native filesystem JSON cache (`.crawler_cache/`).
-  * Native SQLite database backend (`crawler.db`).
-  * TTL expiration, corrupt cache recovery, and cache invalidation.
-* **Full CSS Selector Engine**:
-  * Tags, universal `*`, IDs (`#id`), classes (`.class`, `.card.featured`).
-  * Child combinator (`>`) and descendant combinator (space ` `).
-  * Selector groups (comma `,`).
-  * Attribute existence and operators (`[attr]`, `[attr="val"]`, `^=`, `$=`, `*=`, `~=`).
-  * Structural pseudo-classes (`:first-child`, `:last-child`, `:nth-child()`, `:not()`).
-* **Declarative Schema Extraction (`crawler.extract`)**:
-  * Map HTML elements directly into structured objects, lists, and custom attributes.
-* **Metadata & Structured Data**:
-  * Open Graph (`og:*`), Twitter Cards (`twitter:*`), canonical links, titles, descriptions.
-  * JSON-LD extraction and parsing from `<script type="application/ld+json">`.
-  * HTML `<table>` parsing into structured headers and rows.
-* **Link Graph & Website Analysis**:
-  * Incoming and outgoing link graphs (`get_incoming_links`, `get_outgoing_links`).
-  * Confirmed broken link discovery (`find_broken_links`).
-  * Duplicate content detection (`find_duplicate_content`).
-  * Link graph exports (`export_graph_json`, `export_graph_csv`).
+  * Breadth-first crawl queue with URL normalization, domain budgets, and external link discovery.
+  * Dual storage backends: filesystem JSON cache (`.crawler_cache/`) and native SQLite database (`crawler.db`).
+  * Offline mode: Zero network requests with explicit `ERR_OFFLINE_CACHE_MISS` error reporting.
 * **SSRF Security**:
-  * Blocks loopback (`127.0.0.0/8`, `::1`), private RFC 1918 subnets (`10/8`, `172.16/12`, `192.168/16`), and cloud metadata (`169.254.169.254`).
-  * Revalidates every redirect hop against security constraints.
-* **Multi-Format Exports**:
-  * JSON, JSON Lines (`.jsonl`), CSV, Graph JSON, Graph CSV, and categorized terminal ASCII tables.
+  * Validates destination IPs and schemes, blocking loopback (`127.0.0.0/8`, `::1`), private RFC 1918 subnets (`10/8`, `172.16/12`, `192.168/16`), and cloud metadata (`169.254.169.254`).
 
 ---
 
@@ -142,105 +138,179 @@ crawler = "@crossberry-in/mozhi-crawler"
 
 ---
 
+
+---
+
+## Documentation AI Helper Chat & cURL Guide
+
+The interactive documentation site at [https://crossberry-in.github.io/mozhi-crawler/](https://crossberry-in.github.io/mozhi-crawler/) includes a responsive **AI Docs Helper** that reads the complete package documentation to answer questions and replay past responses.
+
+Developers can also query the documentation assistant or BlockRun models directly using standard `curl`:
+
+```bash
+curl -sS https://blockrun.ai/api/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_BLOCKRUN_API_KEY' \
+  -d '{
+    "model": "nvidia/gpt-oss-20b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the Mozhi Crawler Docs Assistant. Use the official documentation to answer questions about web crawling, spidering, and multi-agent research."
+      },
+      {
+        "role": "user",
+        "content": "How do I configure BlockRun provider in Mozhi crawler with free_only policy?"
+      }
+    ]
+  }'
+```
+
+In pure Mozhi, call it natively with:
+
+```mozhi
+import crawler
+
+let mgr = crawler.init_provider_manager({
+    default_provider: "blockrun",
+    free_only: true
+})
+
+let res = crawler.call_chat_completion(mgr, "blockrun", {
+    model: "nvidia/gpt-oss-20b",
+    messages: [
+        { "role": "system", "content": "You are the Mozhi Crawler Docs Assistant." },
+        { "role": "user", "content": "Explain how multi-agent research operates." }
+    ]
+})
+
+echo(res.content)
+```
+
 ## Quickstart Examples
 
-### 1. Running the Advanced Web Spider
+### 1. Multi-Agent Research with BlockRun Provider
 ```mozhi
 import crawler
 
-let result = crawler.spider({
-    url: "https://example.com",
-    live_fetch: true,
-    save_db: true,
-    cache_dir: ".crawler_cache",
-    max_pages: 50,
-    max_depth: 3,
-    same_domain: true,
-    max_total_requests: 100,
-    respect_robots: true
+let result = crawler.research({
+    query: "What developer products and hardware does Mozhi offer, and what are their prices?",
+    url: "https://example.com/products",
+    provider_config: {
+        default_provider: "blockrun",
+        free_only: true
+    },
+    max_pages: 5,
+    save_cache: true,
+    cache_dir: ".crawler_cache"
 })
 
-echo("Spider Success: " + string(result.ok))
-echo("Pages Crawled:  " + string(result.pages.len()))
-echo("Total Requests: " + string(result.stats.total_requests))
-echo("Stopped Reason: " + result.stopped_reason)
+echo("Research Completed: " + string(result.ok))
+echo("Answer:\n" + result.answer)
+echo("Sources Accessed:  " + string(result.sources.len()))
+
+# Display formatted ASCII tables
+crawler.print_research_tables(result)
 ```
 
-### 2. Reading from Cache in Offline Mode
+### 2. Custom LLM Provider Configuration
 ```mozhi
 import crawler
 
-# Zero network calls; strictly reads from stored cache:
-let offline = crawler.spider({
-    url: "https://example.com",
-    offline: true,
-    cache_dir: ".crawler_cache",
-    max_pages: 10
-})
-
-if offline.ok {
-    echo("Read " + string(offline.pages.len()) + " pages from cache.")
-    echo("Network calls made: " + string(offline.stats.total_requests)) # 0
-} else {
-    echo("Cache miss: " + offline.errors[0].message)
-}
-```
-
-### 3. CSS Selector Queries
-```mozhi
-import crawler
-
-let html = "<div id='catalog'><article class='card featured' data-id='101'><h2>Mozhi Guide</h2><span class='price'>$25</span></article></div>"
-let doc = crawler.parse_html(html)
-
-let card_nid = crawler.query_selector(doc, "article.card.featured", null)
-let title_nid = crawler.query_selector(doc, "h2", card_nid)
-
-echo("Title: " + crawler.node_text(doc, title_nid))
-echo("Item ID: " + crawler.node_attr(doc, card_nid, "data-id"))
-```
-
-### 4. Declarative Schema Extraction
-```mozhi
-import crawler
-
-let schema = {
-    "site_title": "header h1",
-    "articles": {
-        "selector": "article.post",
-        "multiple": true,
-        "fields": {
-            "id": { "attribute": "data-id" },
-            "heading": "h2",
-            "summary": "p.snippet",
-            "read_more": { "selector": "a.more", "attribute": "href" }
+let mgr = crawler.init_provider_manager({
+    default_provider: "blockrun",
+    free_only: true,
+    providers: [
+        {
+            id: "blockrun",
+            name: "BlockRun",
+            base_url: "https://blockrun.ai/api/v1",
+            api_format: "openai",
+            api_key_env: "BLOCKRUN_API_KEY",
+            model_discovery: true,
+            enabled: true
+        },
+        {
+            id: "local-vllm",
+            name: "Local vLLM Endpoint",
+            base_url: "http://127.0.0.1:8000/v1",
+            api_format: "openai",
+            model_discovery: true,
+            enabled: true
         }
-    }
-}
+    ]
+})
 
-let page = crawler.scrape("https://example.com/blog")
-let data = crawler.extract(page.doc, schema)
-
-for a in data.articles {
-    echo(a.heading + " -> " + a.read_more)
-}
+# Test connection & discover models
+let health = crawler.test_provider_connection(mgr, "blockrun")
+echo("Connection status: " + string(health.status))
 ```
 
-### 5. Link Graph Analysis & Graph Exports
+### 3. Offline Research Mode (Zero Network Calls)
 ```mozhi
 import crawler
 
-let res = crawler.spider({ url: "https://example.com", max_pages: 20 })
+# Read previously cached research; issues 0 network calls:
+let offline_res = crawler.research({
+    query: "What developer products and hardware does Mozhi offer, and what are their prices?",
+    offline: true,
+    cache_dir: ".crawler_cache"
+})
 
-# Analyze link topology:
-let outgoing = crawler.get_outgoing_links(res, "https://example.com/")
-let incoming = crawler.get_incoming_links(res, "https://example.com/docs")
-let duplicates = crawler.find_duplicate_content(res)
-let broken = crawler.find_broken_links(res)
+if offline_res.ok {
+    echo("Cached answer:\n" + offline_res.answer)
+} else {
+    echo("Cache miss: " + offline_res.errors[0].message)
+}
+```
 
-# Export graph for visualization (e.g. Gephi, D3.js, Cytoscape):
-crawler.export_graph_json(res, "graph.json")
-crawler.export_graph_csv(res, "graph.csv")
+---
+
+## JSON Output Schema Contract
+
+Every research call returns a structured result adhering strictly to this verified schema:
+
+```json
+{
+  "ok": true,
+  "query": "What products does Mozhi store offer and what are their prices?",
+  "answer": "Based on verified catalog documentation, Mozhi Compiler Pro costs $99.00, Mozhi Mechanical Keyboard is available for $149.00, and the Cotton Hoodie is priced at $45.00 [Source: http://127.0.0.1:8089/products].",
+  "agents": [
+    { "name": "query_planner", "status": "completed" },
+    { "name": "link_discovery_agent", "status": "completed" },
+    { "name": "web_collector_agent", "status": "completed" },
+    { "name": "evidence_extraction_agent", "status": "completed" },
+    { "name": "verification_agent", "status": "completed" },
+    { "name": "synthesis_agent", "status": "completed" }
+  ],
+  "sources": [
+    {
+      "url": "http://127.0.0.1:8089/products",
+      "title": "Product Catalog - Mozhi Store",
+      "http_status": 200,
+      "retrieved_at": 1729900000
+    }
+  ],
+  "findings": [
+    {
+      "claim": "Mozhi Compiler Pro costs $99.00 and is an ahead-of-time compilation suite.",
+      "source_urls": ["http://127.0.0.1:8089/products"],
+      "confidence": "high",
+      "evidence_type": "direct"
+    }
+  ],
+  "conflicts": [],
+  "errors": [],
+  "stats": {
+    "links_discovered": 4,
+    "pages_fetched": 3,
+    "pages_parsed": 3,
+    "llm_calls": 2,
+    "cache_hits": 0,
+    "fallbacks": 0
+  },
+  "stopped_reason": "completed"
+}
 ```
 
 ---
@@ -249,70 +319,47 @@ crawler.export_graph_csv(res, "graph.csv")
 
 | Category | Function | Signature | Description |
 |---|---|---|---|
-| **Spider** | `crawler.spider` | `(config: map) -> map` | Configurable BFS web spider with limits and storage. |
-| **Spider** | `crawler.spider_stats` | `(result: map) -> map` | Returns crawl metrics summary. |
-| **Scraper** | `crawler.scrape` | `(url_or_opts) -> map` | Fetches and parses a single web page. |
-| **Scraper** | `crawler.crawl` | `(url, max_p, max_d) -> map` | High-level crawler backward compatibility. |
-| **DOM** | `crawler.parse_html` | `(html: str) -> map` | Parses HTML into node-keyed DOM tree. |
-| **DOM** | `crawler.query_selector` | `(doc, sel, ctx) -> int` | First matching node ID or `null`. |
-| **DOM** | `crawler.query_selector_all` | `(doc, sel, ctx) -> array` | Array of matching node IDs. |
-| **DOM** | `crawler.matches_selector` | `(doc, nid, sel) -> bool` | Checks if element satisfies selector. |
-| **DOM** | `crawler.node_text` | `(doc, nid) -> str` | Extracts recursive plain text. |
-| **DOM** | `crawler.node_attr` | `(doc, nid, attr) -> str` | Gets element attribute value. |
-| **DOM** | `crawler.node_html` | `(doc, nid) -> str` | Serializes outer HTML. |
-| **Extraction** | `crawler.extract` | `(doc, schema) -> map` | Extracts structured records via schema. |
-| **Extraction** | `crawler.extract_metadata` | `(doc) -> map` | Extracts SEO, Open Graph & Twitter tags. |
-| **Extraction** | `crawler.extract_json_ld` | `(doc) -> array` | Extracts parsed JSON-LD objects. |
-| **Extraction** | `crawler.extract_tables` | `(doc) -> array` | Parses HTML tables into arrays of rows. |
-| **Link Graph**| `crawler.get_outgoing_links` | `(res, url) -> array` | Outgoing URLs originating from page. |
-| **Link Graph**| `crawler.get_incoming_links` | `(res, url) -> array` | Incoming URLs targeting page. |
-| **Link Graph**| `crawler.find_broken_links` | `(res) -> array` | Confirmed HTTP 4xx/5xx failures. |
-| **Link Graph**| `crawler.find_duplicate_content` | `(res) -> array` | Groups URLs with identical content fingerprints. |
-| **Storage** | `crawler.init_storage` | `(opts: map) -> map` | Initializes filesystem or SQLite cache. |
-| **Storage** | `crawler.storage_get` | `(store, url, now, refresh)` | Retrieves cached record. |
-| **Storage** | `crawler.storage_put` | `(store, url, data, body)` | Persists record if `save_db: true`. |
-| **Storage** | `crawler.storage_invalidate` | `(store, url) -> bool` | Evicts cached record. |
-| **Security** | `crawler.is_private_ip` | `(host: str) -> bool` | Loopback, RFC 1918, or metadata IP check. |
-| **Security** | `crawler.validate_target_url` | `(url, allow_priv) -> map` | Validates scheme and destination safety. |
-| **Exports** | `crawler.export_json` | `(data, path) -> bool` | Exports data as formatted JSON. |
-| **Exports** | `crawler.export_jsonl` | `(records, path) -> bool`| Exports array as JSON Lines. |
-| **Exports** | `crawler.export_csv` | `(headers, rows, path) -> bool` | Exports tabular data to CSV. |
-| **Exports** | `crawler.export_graph_json` | `(res, path) -> bool` | Exports link graph topology as JSON. |
-| **Exports** | `crawler.export_graph_csv` | `(res, path) -> bool` | Exports link graph edges as CSV. |
-| **Visuals** | `crawler.print_tables` | `(data: map)` | Renders categorized ASCII terminal tables. |
-
----
-
-## Error Handling & Error Codes
-
-Every operation returns explicit, structured diagnostics:
-
-```json
-{
-  "code": "ERR_OFFLINE_CACHE_MISS",
-  "message": "Page not in offline cache: http://example.com/item",
-  "url": "http://example.com/item",
-  "operation": "fetch",
-  "retryable": false,
-  "suggestion": "Run spider with live_fetch=true and save_db=true first to populate offline cache."
-}
-```
-
-* `ERR_CONFIG_CONFLICT`: Conflicting options (e.g. `offline=true` and `live_fetch=true`).
-* `ERR_OFFLINE_CACHE_MISS`: Requested URL not found in cache while offline.
-* `ERR_SSRF_BLOCKED`: Destination resolved to private, loopback, or metadata subnet.
-* `ERR_RESPONSE_TOO_LARGE`: Response body exceeded `max_response_bytes`.
-* `ERR_HTTP_STATUS`: Server responded with HTTP 4xx or 5xx code.
-* `ERR_REDIRECT_LOOP`: Redirect cycle detected.
+| **Research** | `crawler.research` | `(config: map) -> map` | Orchestrates end-to-end multi-agent research workflow. |
+| **Research** | `crawler.validate_research_result` | `(res: map) -> map` | Validates result against documented JSON contract schema. |
+| **Research** | `crawler.print_research_tables` | `(res: map)` | Renders categorized terminal ASCII tables for research results. |
+| **Provider** | `crawler.init_provider_manager` | `(cfg_or_path) -> map` | Initializes provider manager with default or custom endpoints. |
+| **Provider** | `crawler.add_provider` | `(mgr, prov: map) -> map` | Adds or updates custom LLM provider endpoint. |
+| **Provider** | `crawler.update_provider` | `(mgr, id, updates) -> map` | Updates fields for existing provider. |
+| **Provider** | `crawler.remove_provider` | `(mgr, id: str) -> map` | Removes provider by ID. |
+| **Provider** | `crawler.list_providers` | `(mgr) -> array` | Lists providers with credentials automatically redacted. |
+| **Provider** | `crawler.discover_models` | `(mgr, id, store) -> array` | Fetches model catalog from provider `GET /models`. |
+| **Routing** | `crawler.is_model_free` | `(model: map) -> bool` | Checks if model has verified free tier pricing. |
+| **Routing** | `crawler.filter_free_models` | `(models: array) -> array` | Returns subset of models meeting free criteria. |
+| **Routing** | `crawler.select_model_for_task` | `(mgr, id, task, vis)` | Selects best model for task honoring free-only policy. |
+| **Routing** | `crawler.call_chat_completion_with_fallback` | `(mgr, opts: map) -> map` | Calls chat completion with retry, backoff, and fallback. |
+| **Evidence** | `crawler.init_evidence_manager` | `() -> map` | Initializes atomic claim store and provenance tracker. |
+| **Evidence** | `crawler.add_evidence` | `(em, claim, url, title, conf, type, snip)` | Adds evidence with source provenance and corroboration. |
+| **Spider** | `crawler.spider` | `(config: map) -> map` | BFS spider with budgets, limits, and link graph. |
+| **DOM** | `crawler.parse_html` | `(html: str) -> map` | Parses HTML into DOM tree. |
+| **DOM** | `crawler.query_selector` | `(doc, sel, ctx) -> int` | First matching node ID. |
+| **DOM** | `crawler.query_selector_all` | `(doc, sel, ctx) -> array` | All matching node IDs. |
+| **Security** | `crawler.validate_target_url` | `(url, allow_priv) -> map` | Validates scheme, loopback, private subnets, and SSRF. |
+| **Storage** | `crawler.init_storage` | `(opts: map) -> map` | Initializes JSON or SQLite persistent cache. |
 
 ---
 
 ## Testing
 
-Run the full regression test suite:
+Run all 3 test suites:
 
 ```bash
 mozhi test tests/
+```
+
+Expected output:
+
+```
+Running 3 test file(s) from tests/
+  tests//crawler.test.mz                   PASS
+  tests//research.test.mz                  PASS
+  tests//spider.test.mz                    PASS
+
+3 passed, 0 failed
 ```
 
 Run the showcase demo:

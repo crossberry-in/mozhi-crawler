@@ -1,0 +1,275 @@
+import c from "../src/mod.mz"
+import fs from "fs"
+
+echo("============================================================")
+echo("   MULTI-AGENT RESEARCH ENGINE FULL TEST SUITE              ")
+echo("============================================================")
+
+# ------------------------------------------------------------
+# 1. Custom Provider Configuration & Redaction
+# ------------------------------------------------------------
+echo("\n[Test 1/8] Custom Provider Configuration & Redaction...")
+let mgr = c.init_provider_manager(null)
+assert(mgr.default_provider == "blockrun")
+assert(mgr.free_only == true)
+assert(mgr.providers.len() == 1)
+
+# Add custom provider
+let add_res = c.add_provider(mgr, {
+    id: "local-custom",
+    name: "Local Mock LLM",
+    base_url: "http://127.0.0.1:8089/custom/v1",
+    api_format: "openai",
+    api_key: "sk-secret-token-12345",
+    model_discovery: true,
+    enabled: true
+})
+assert(add_res.ok == true)
+assert(mgr.providers.len() == 2)
+
+# Update provider
+let up_res = c.update_provider(mgr, "local-custom", { name: "Renamed Mock LLM" })
+assert(up_res.ok == true)
+assert(up_res.provider.name == "Renamed Mock LLM")
+
+# List providers & verify key redaction
+let listed = c.list_providers(mgr)
+assert(listed.len() == 2)
+assert(listed[1].api_key != "sk-secret-token-12345")
+assert(listed[1].api_key.contains("[REDACTED]"))
+echo("Credential redaction verified: " + listed[1].api_key)
+
+# Remove provider
+let rm_res = c.remove_provider(mgr, "local-custom")
+assert(rm_res.ok == true)
+assert(mgr.providers.len() == 1)
+
+# ------------------------------------------------------------
+# 2. Dynamic Model Catalog Discovery & Free-Only Policy
+# ------------------------------------------------------------
+echo("\n[Test 2/8] Dynamic Model Discovery & Free-Tier Filtering...")
+# Update blockrun base_url to local mock
+c.update_provider(mgr, "blockrun", { base_url: "http://127.0.0.1:8089/blockrun/v1" })
+
+let models = c.discover_models(mgr, "blockrun", null)
+assert(models.len() == 10)
+echo("Discovered " + string(models.len()) + " models from catalog.")
+
+# Check free-only filtering
+assert(mgr.free_only == true)
+let free_models = c.list_available_models(mgr, "blockrun")
+echo("Free models count: " + string(free_models.len()))
+assert(free_models.len() == 7)
+for m in free_models {
+    assert(c.is_model_free(m) == true)
+}
+
+# ------------------------------------------------------------
+# 3. Model Routing & Capability Matching
+# ------------------------------------------------------------
+echo("\n[Test 3/8] Model Routing for Tasks...")
+let reasoning_model = c.select_model_for_task(mgr, "blockrun", "reasoning", false)
+assert(reasoning_model != null)
+assert(c.is_model_free(reasoning_model) == true)
+echo("Selected for reasoning: " + reasoning_model.id)
+
+let vision_model = c.select_model_for_task(mgr, "blockrun", "vision", true)
+assert(vision_model != null)
+assert(c.is_model_free(vision_model) == true)
+echo("Selected for vision:    " + vision_model.id)
+
+# ------------------------------------------------------------
+# 4. Strict Free-Only Enforcement (Never Silently Use Paid)
+# ------------------------------------------------------------
+echo("\n[Test 4/8] Strict Free-Only Enforcement...")
+# Create provider with paid-only models
+let paid_mgr = c.init_provider_manager(null)
+paid_mgr.free_only = true
+c.update_provider(paid_mgr, "blockrun", {
+    models: [
+        { id: "gpt-paid", name: "GPT Paid", billing_mode: "paid", categories: ["chat"], pricing: { input: 10, output: 50 } }
+    ],
+    model_discovery: false
+})
+let no_model = c.select_model_for_task(paid_mgr, "blockrun", "chat", false)
+assert(no_model == null)
+let paid_call = c.call_chat_completion_with_fallback(paid_mgr, { prompt: "Test", task: "chat" })
+assert(paid_call.ok == false)
+assert(paid_call.error.code == "ERR_NO_FREE_MODELS_AVAILABLE")
+echo("Strict free_only enforcement passed: " + paid_call.error.message)
+
+# ------------------------------------------------------------
+# 5. LLM Completion & Actual Model Reporting
+# ------------------------------------------------------------
+echo("\n[Test 5/8] LLM Completion & Actual Model Reporting...")
+let comp = c.test_model_completion(mgr, "blockrun", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "Tell me about Mozhi Compiler Pro")
+assert(comp.ok == true)
+assert(comp.text.contains("Mozhi Compiler Pro"))
+assert(comp.actual_model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
+echo("Requested model: " + comp.requested_model)
+echo("Actual model:    " + comp.actual_model)
+echo("Completion text: " + comp.text)
+
+# ------------------------------------------------------------
+# 6. Fallback on Transient Rate Limit (429)
+# ------------------------------------------------------------
+echo("\n[Test 6/8] Fallback on Transient Rate Limit (429)...")
+let fallback_mgr = c.init_provider_manager(null)
+c.add_provider(fallback_mgr, {
+    id: "flaky-provider",
+    name: "Flaky Provider",
+    base_url: "http://127.0.0.1:8089/error/rate-limit",
+    enabled: true,
+    model_discovery: false,
+    models: [{ id: "mock-free", name: "Mock Free", billing_mode: "free", categories: ["chat"] }]
+})
+c.add_provider(fallback_mgr, {
+    id: "backup-provider",
+    name: "Backup Provider",
+    base_url: "http://127.0.0.1:8089/blockrun/v1",
+    enabled: true,
+    model_discovery: false,
+    models: [{ id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", name: "Backup", billing_mode: "free", categories: ["chat"] }]
+})
+c.set_default_provider(fallback_mgr, "flaky-provider")
+
+let fb_res = c.call_chat_completion_with_fallback(fallback_mgr, {
+    prompt: "Tell me about Mozhi Compiler",
+    task: "chat",
+    max_fallbacks: 2
+})
+assert(fb_res.ok == true)
+assert(fb_res.provider_id == "backup-provider")
+assert(fallback_mgr.stats.fallback_count > 0)
+echo("Fallback succeeded to backup-provider! Total fallbacks: " + string(fallback_mgr.stats.fallback_count))
+
+# ------------------------------------------------------------
+# 7. End-to-End Multi-Agent Research Engine
+# ------------------------------------------------------------
+echo("\n[Test 7/8] Full Multi-Agent Research Run...")
+let test_cache_dir = ".test_research_cache"
+if fs.exists(test_cache_dir) {
+    fs.remove(test_cache_dir, true)
+}
+
+let research_res = c.research({
+    query: "What products and developer gear does Mozhi offer and what are their prices?",
+    url: "http://127.0.0.1:8089/products",
+    provider_config: {
+        default_provider: "blockrun",
+        free_only: true,
+        providers: [
+            {
+                id: "blockrun",
+                name: "BlockRun",
+                base_url: "http://127.0.0.1:8089/blockrun/v1",
+                model_discovery: true,
+                enabled: true
+            }
+        ]
+    },
+    max_pages: 3,
+    save_cache: true,
+    cache_dir: test_cache_dir
+})
+
+assert(research_res.ok == true)
+assert(research_res.agents.len() == 6)
+assert(research_res.sources.len() >= 1)
+assert(research_res.findings.len() >= 1)
+assert(research_res.stats.pages_fetched >= 1)
+assert(research_res.answer.len() > 0)
+echo("Research Success: " + string(research_res.ok))
+echo("Answer: " + research_res.answer)
+echo("Sources count:  " + string(research_res.sources.len()))
+echo("Findings count: " + string(research_res.findings.len()))
+echo("Agents executed:")
+for a in research_res.agents {
+    echo("  - " + a.name + " (" + a.status + ")")
+}
+
+# Validate JSON Contract
+let val = c.validate_research_result(research_res)
+assert(val.valid == true)
+echo("JSON result schema validation: PASS")
+
+# ------------------------------------------------------------
+# 8. Offline Mode & Cache Miss & Config Conflicts
+# ------------------------------------------------------------
+echo("\n[Test 8/8] Offline Mode & Conflict Tests...")
+
+# Conflict test
+let conflict = c.research({
+    query: "test",
+    offline: true,
+    live_fetch: true
+})
+assert(conflict.ok == false)
+assert(conflict.stopped_reason == "config_conflict")
+echo("Config conflict error: " + conflict.errors[0].message)
+
+# Offline read of previously cached research
+let offline_res = c.research({
+    query: "What products and developer gear does Mozhi offer and what are their prices?",
+    offline: true,
+    cache_dir: test_cache_dir
+})
+assert(offline_res.ok == true)
+assert(offline_res.cached == true)
+echo("Offline cached research read successfully! (Zero network requests)")
+
+# Offline cache miss test
+let miss_res = c.research({
+    query: "Unseen query never cached before",
+    offline: true,
+    cache_dir: test_cache_dir
+})
+assert(miss_res.ok == false)
+assert(miss_res.stopped_reason == "offline_cache_miss")
+echo("Offline cache miss handled cleanly: " + miss_res.errors[0].message)
+
+# Render Categorized Terminal Tables
+echo("\nRendering Research Output Tables:")
+c.print_research_tables(research_res)
+
+# ------------------------------------------------------------
+# 9. Vision Models & Image Understanding
+# ------------------------------------------------------------
+echo("\n[Test 9/9] Vision Analysis & Image Understanding...")
+let vision_res = c.research({
+    query: "Analyze architecture diagram image",
+    url: "http://127.0.0.1:8089/media-showcase",
+    image_url: "http://127.0.0.1:8089/images/diagram.svg",
+    image_analysis: "enabled",
+    provider_config: {
+        default_provider: "blockrun",
+        free_only: true,
+        providers: [
+            {
+                id: "blockrun",
+                name: "BlockRun",
+                base_url: "http://127.0.0.1:8089/blockrun/v1",
+                model_discovery: true,
+                enabled: true
+            }
+        ]
+    },
+    max_pages: 1,
+    save_cache: false
+})
+assert(vision_res.ok == true)
+let has_vision = false
+for f in vision_res.findings {
+    if f.evidence_type == "vision" {
+        has_vision = true
+    }
+}
+assert(has_vision == true)
+echo("Vision evidence extracted and verified!")
+
+# Cleanup
+fs.remove(test_cache_dir, true)
+
+echo("\n============================================================")
+echo("   ALL 9 TEST SECTIONS PASSED SUCCESSFULLY!                 ")
+echo("============================================================")

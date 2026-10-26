@@ -1,0 +1,388 @@
+import web
+import json
+import fs
+
+let app = web.create({ log: false })
+
+# ============================================================
+# Existing Web Crawler Test Endpoints
+# ============================================================
+app.get("/", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Home - Demo Site</title><meta name=\"description\" content=\"Demo website for testing Mozhi web crawler\"></head><body><h1>Welcome to Demo Site</h1><p>Test website running native Mozhi server.</p><nav><a href=\"/about\">About Us</a> | <a href=\"/docs\">Documentation</a> | <a href=\"/blog\">Blog</a> | <a href=\"/contact\">Contact</a></nav></body></html>")
+})
+
+app.get("/about", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>About Us</title><meta name=\"description\" content=\"Learn more about our Mozhi project\"></head><body><h1>About Our Project</h1><p>We build tools in Mozhi.</p><a href=\"/\">Home</a> | <a href=\"/team\">Meet the Team</a></body></html>")
+})
+
+app.get("/team", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Our Team</title></head><body><h1>Meet the Engineers</h1><p>Mozhi developers.</p><a href=\"/about\">Back to About</a> | <a href=\"/\">Home</a></body></html>")
+})
+
+app.get("/docs", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Documentation Index</title></head><body><h1>Documentation</h1><ul><li><a href=\"/docs/install\">Installation</a></li><li><a href=\"/docs/quickstart\">Quickstart</a></li><li><a href=\"/\">Home</a></li></ul></body></html>")
+})
+
+app.get("/docs/install", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Install Guide</title></head><body><h1>How to Install Mozhi</h1><p>npm install -g @crossberryweb/mozhi</p><a href=\"/docs\">Docs Index</a> | <a href=\"/docs/quickstart\">Next: Quickstart</a></body></html>")
+})
+
+app.get("/docs/quickstart", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Quickstart Guide</title></head><body><h1>Mozhi Quickstart</h1><p>Run mz run app.mz</p><a href=\"/docs\">Docs Index</a> | <a href=\"/blog\">Visit Blog</a></body></html>")
+})
+
+app.get("/blog", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Blog - Articles</title></head><body><h1>Engineering Blog</h1><ul><li><a href=\"/blog/post-1\">Building a Web Crawler</a></li><li><a href=\"/blog/post-2\">Native SQLite in Mozhi</a></li><li><a href=\"/external\">External Links</a></li></ul><a href=\"/\">Home</a></body></html>")
+})
+
+app.get("/blog/post-1", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Blog: Building a Web Crawler</title></head><body><h1>Building a Web Crawler</h1><p>100% Mozhi code.</p><a href=\"/blog\">Blog</a> | <a href=\"/blog/post-2\">Next Post</a></body></html>")
+})
+
+app.get("/blog/post-2", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Blog: Native SQLite</title></head><body><h1>SQLite with Mozhi</h1><p>Prepared queries only.</p><a href=\"/blog\">Blog</a> | <a href=\"/missing-page\">Test 404 Link</a></body></html>")
+})
+
+app.get("/external", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>External Links</title></head><body><h1>External Resources</h1><a href=\"http://example.com/\">Example Domain</a> | <a href=\"mailto:test@example.com\">Email</a> | <a href=\"javascript:void(0)\">Script</a> | <a href=\"#section\">Anchor</a></body></html>")
+})
+
+app.get("/contact", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Contact Us</title></head><body><h1>Get in Touch</h1><p>Reach out to the community.</p><a href=\"/\">Home</a></body></html>")
+})
+
+app.get("/media-showcase", fn(req, res) {
+    let html = "<!doctype html><html lang=\"en\"><head>"
+        + "<title>Media Showcase - Images, Videos, Files & Content</title>"
+        + "<meta name=\"description\" content=\"Comprehensive media showcase page demonstrating images, videos, downloadable documents, and rich text.\">"
+        + "<meta name=\"keywords\" content=\"mozhi, crawler, media, video, images, pdf\">"
+        + "<meta name=\"author\" content=\"Mozhi Team\">"
+        + "<meta property=\"og:title\" content=\"Media Showcase Demo\">"
+        + "<meta property=\"og:image\" content=\"http://127.0.0.1:8089/assets/og-cover.png\">"
+        + "<link rel=\"stylesheet\" href=\"/css/styles.css\">"
+        + "<link rel=\"icon\" href=\"/favicon.ico\">"
+        + "<script src=\"/js/analytics.js\"></script>"
+        + "</head><body>"
+        + "<header><h1>Media Showcase Hub</h1><p class=\"lead\">Exploring full extraction of web assets with native Mozhi.</p></header>"
+        + "<section id=\"gallery\">"
+        + "<h2>Image Gallery</h2>"
+        + "<p>Here are high-resolution screenshots and product illustrations.</p>"
+        + "<img src=\"/images/logo.png\" alt=\"Mozhi Official Logo\" width=\"200\" height=\"60\">"
+        + "<img src=\"/images/hero-banner.jpg\" alt=\"Main Hero Banner\">"
+        + "<img src=\"/images/diagram.svg\" alt=\"Architecture Architecture Workflow\">"
+        + "<img src=\"/images/thumbnail.webp\" alt=\"WebP Thumbnail Preview\">"
+        + "</section>"
+        + "<section id=\"videos\">"
+        + "<h2>Video Streams & Tutorials</h2>"
+        + "<p>Watch our step-by-step video guides on web scraping.</p>"
+        + "<video controls poster=\"/videos/tutorial-poster.jpg\">"
+        + "<source src=\"/videos/mozhi-intro.mp4\" type=\"video/mp4\">"
+        + "<source src=\"/videos/mozhi-intro.webm\" type=\"video/webm\">"
+        + "</video>"
+        + "<iframe src=\"https://www.youtube.com/embed/dQw4w9WgXcQ\" width=\"560\" height=\"315\"></iframe>"
+        + "<p><a href=\"/downloads/demo-clip.mov\">Download Raw MOV Clip</a></p>"
+        + "</section>"
+        + "<section id=\"downloads\">"
+        + "<h2>Downloadable Files & Datasets</h2>"
+        + "<p>Get official resources, datasets, and technical documentation.</p>"
+        + "<ul>"
+        + "<li><a href=\"/files/documentation-v3.pdf\">Complete Mozhi v3 Manual (PDF)</a></li>"
+        + "<li><a href=\"/files/dataset-2026.csv\">Crawled Benchmarks Dataset (CSV)</a></li>"
+        + "<li><a href=\"/files/mozhi-project-template.zip\">Project Starter Template (ZIP)</a></li>"
+        + "<li><a href=\"/files/release-v3.2.tar.gz\">Source Archive (TAR.GZ)</a></li>"
+        + "<li><a href=\"/files/specifications.docx\">Architecture Specifications (DOCX)</a></li>"
+        + "<li><a href=\"/files/notes.txt\">Developer Release Notes (TXT)</a></li>"
+        + "</ul>"
+        + "</section>"
+        + "<section id=\"links\">"
+        + "<h2>Useful Links</h2>"
+        + "<ul>"
+        + "<li><a href=\"/\">Home Page</a></li>"
+        + "<li><a href=\"/docs\">API Documentation</a></li>"
+        + "<li><a href=\"/about\">About Us</a></li>"
+        + "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">Original CERN World Wide Web</a></li>"
+        + "<li><a href=\"http://example.com/\">Example Domain External</a></li>"
+        + "</ul>"
+        + "</section>"
+        + "<footer><p>&copy; 2026 Crossberry Mozhi Project. All rights reserved.</p></footer>"
+        + "</body></html>"
+    return res.html(html)
+})
+
+app.get("/wiki/Data", fn(req, res) {
+    let html = "<!doctype html><html lang=\"en\"><head>"
+        + "<title>Data - Wikipedia</title>"
+        + "<meta name=\"description\" content=\"Data is a collection of discrete values that convey information, describing quantity, quality, fact, statistics, or other basic units of meaning.\">"
+        + "<meta name=\"keywords\" content=\"data, information, statistics, computing, knowledge\">"
+        + "<meta name=\"author\" content=\"Wikipedia contributors\">"
+        + "<meta property=\"og:title\" content=\"Data - Wikipedia\">"
+        + "<meta property=\"og:image\" content=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/0/06/DIKW_Pyramid.svg/437px-DIKW_Pyramid.svg.png\">"
+        + "<link rel=\"stylesheet\" href=\"/css/wikipedia.css\">"
+        + "<link rel=\"icon\" href=\"/favicon.ico\">"
+        + "<link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Data\">"
+        + "<script src=\"/js/wiki.js\"></script>"
+        + "</head><body>"
+        + "<header><h1>Data</h1><p class=\"lead\">From Wikipedia, the free encyclopedia</p></header>"
+        + "<article>"
+        + "<p>Data is a collection of discrete values that convey information, describing quantity, quality, fact, statistics, or other basic units of meaning.</p>"
+        + "<p>A datum is an individual value in a collection of data. Data is usually organized into structures such as tables that provide additional context.</p>"
+        + "<section id=\"etymology\">"
+        + "<h2>Etymology and terminology</h2>"
+        + "<p>The Latin word data is the plural of datum, '(something) given', which is the neuter past participle of the verb dare, 'to give'.</p>"
+        + "<p>In English, the word data has been used as a plural noun since the 17th century, though it is now widely treated as a singular mass noun.</p>"
+        + "</section>"
+        + "<section id=\"meaning\">"
+        + "<h2>Meaning</h2>"
+        + "<p>Data, information, knowledge, and wisdom are closely related concepts in the DIKW pyramid.</p>"
+        + "<img src=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/0/06/DIKW_Pyramid.svg/437px-DIKW_Pyramid.svg.png\" alt=\"DIKW Pyramid illustrating relationships among data, information, knowledge, and wisdom\" width=\"437\" height=\"455\">"
+        + "<img src=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/7/77/Computer_tape.jpg/800px-Computer_tape.jpg\" alt=\"Magnetic tape data storage reel\" width=\"800\" height=\"533\">"
+        + "<img src=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/5/58/Hollerith_punched_card.jpg/800px-Hollerith_punched_card.jpg\" alt=\"Hollerith punched card data format\" width=\"800\" height=\"350\">"
+        + "</section>"
+        + "<section id=\"sources\">"
+        + "<h2>Data sources</h2>"
+        + "<p>Gathering data can be accomplished through primary sources such as scientific experiments, sensor networks, surveys, and administrative records.</p>"
+        + "<p>Synthetic data is generated algorithmically when real-world datasets are scarce, proprietary, or constrained by privacy regulations.</p>"
+        + "</section>"
+        + "<section id=\"documents\">"
+        + "<h2>Data documents</h2>"
+        + "<p>Whenever data needs to be registered, it exists in the form of documents, repositories, or serialized archives.</p>"
+        + "<ul>"
+        + "<li><a href=\"/files/joint-doctrine-intelligence-data.pdf\">Joint Publication 2-0: Data and Intelligence (PDF)</a></li>"
+        + "<li><a href=\"/files/world-bank-data-standards.pdf\">World Bank Open Data Standards (PDF)</a></li>"
+        + "<li><a href=\"/files/open-datasets-catalog.csv\">Global Scientific Datasets Catalog (CSV)</a></li>"
+        + "<li><a href=\"/files/data-dictionary-template.zip\">Data Architecture Dictionary Template (ZIP)</a></li>"
+        + "</ul>"
+        + "</section>"
+        + "<section id=\"links\">"
+        + "<h2>See also</h2>"
+        + "<ul>"
+        + "<li><a href=\"/wiki/Information\">Information</a></li>"
+        + "<li><a href=\"/wiki/Knowledge\">Knowledge</a></li>"
+        + "<li><a href=\"/wiki/Statistics\">Statistics</a></li>"
+        + "<li><a href=\"/wiki/Big_data\">Big data</a></li>"
+        + "<li><a href=\"/wiki/Database\">Database</a></li>"
+        + "<li><a href=\"https://en.wiktionary.org/wiki/data\">Wiktionary: data definition</a></li>"
+        + "<li><a href=\"https://commons.wikimedia.org/wiki/Category:Data\">Wikimedia Commons Data Media</a></li>"
+        + "<li><a href=\"https://www.wikidata.org/wiki/Q42848\">Wikidata Entity Q42848</a></li>"
+        + "</ul>"
+        + "</section>"
+        + "</article>"
+        + "<footer><p>Text is available under the Creative Commons Attribution-ShareAlike License.</p></footer>"
+        + "</body></html>"
+    return res.html(html)
+})
+
+app.get("/robots.txt", fn(req, res) {
+    let txt = "User-agent: *\nDisallow: /admin/\nDisallow: /secret/\nAllow: /admin/public/\nSitemap: http://127.0.0.1:8089/sitemap.xml\n"
+    return res.text(txt)
+})
+
+app.get("/sitemap.xml", fn(req, res) {
+    let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        + "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n"
+        + "  <url><loc>http://127.0.0.1:8089/</loc><priority>1.0</priority></url>\n"
+        + "  <url><loc>http://127.0.0.1:8089/about</loc><priority>0.8</priority></url>\n"
+        + "  <url><loc>http://127.0.0.1:8089/products</loc><priority>0.9</priority></url>\n"
+        + "  <url><loc>http://127.0.0.1:8089/wiki/Data</loc><priority>0.7</priority></url>\n"
+        + "</urlset>"
+    return res.text(xml)
+})
+
+app.get("/redir", fn(req, res) {
+    return res.redirect("/dest", 301)
+})
+
+app.get("/dest", fn(req, res) {
+    return res.html("<!doctype html><html><head><title>Destination Page</title></head><body><h1>Arrived at Destination</h1><p>Redirect followed successfully.</p></body></html>")
+})
+
+app.get("/products", fn(req, res) {
+    let html = "<!doctype html><html lang=\"en\"><head>"
+        + "<title>Product Catalog - Mozhi Store</title>"
+        + "<meta name=\"description\" content=\"Browse high-performance open-source tools and developer gear.\">"
+        + "<meta property=\"og:title\" content=\"Mozhi Store Products\">"
+        + "<meta property=\"og:description\" content=\"Top developer tools\">"
+        + "<meta property=\"og:image\" content=\"http://127.0.0.1:8089/images/store-banner.jpg\">"
+        + "<meta name=\"twitter:card\" content=\"summary_large_image\">"
+        + "<meta name=\"twitter:title\" content=\"Mozhi Store Catalog\">"
+        + "<link rel=\"canonical\" href=\"http://127.0.0.1:8089/products\">"
+        + "<script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"ProductCatalog\", \"name\": \"Mozhi Catalog\", \"itemCount\": 3}</script>"
+        + "</head><body>"
+        + "<header><h1>Developer Tools & Hardware</h1><nav><a href=\"/\">Home</a> | <a href=\"/docs\">Docs</a></nav></header>"
+        + "<main class=\"catalog-grid\">"
+        + "  <article class=\"product-item featured\" data-id=\"prod-101\" data-category=\"tools\">"
+        + "    <h2 class=\"prod-title\">Mozhi Compiler Pro</h2>"
+        + "    <span class=\"prod-price\">$99.00</span>"
+        + "    <p class=\"prod-desc\">High speed ahead-of-time Mozhi compilation suite.</p>"
+        + "    <a href=\"/products/101\" class=\"action-btn buy\">Buy Compiler</a>"
+        + "  </article>"
+        + "  <article class=\"product-item\" data-id=\"prod-102\" data-category=\"gear\">"
+        + "    <h2 class=\"prod-title\">Mozhi Mechanical Keyboard</h2>"
+        + "    <span class=\"prod-price\">$149.00</span>"
+        + "    <p class=\"prod-desc\">Custom switches tuned for Mozhi developers.</p>"
+        + "    <a href=\"/products/102\" class=\"action-btn buy\">Buy Keyboard</a>"
+        + "  </article>"
+        + "  <article class=\"product-item\" data-id=\"prod-103\" data-category=\"swag\">"
+        + "    <h2 class=\"prod-title\">Mozhi Cotton Hoodie</h2>"
+        + "    <span class=\"prod-price\">$45.00</span>"
+        + "    <p class=\"prod-desc\">Ultra-comfortable hoodie with embroidered logo.</p>"
+        + "    <a href=\"/products/103\" class=\"action-btn buy\">Buy Hoodie</a>"
+        + "  </article>"
+        + "</main>"
+        + "<footer><p>Mozhi Store &copy; 2026</p></footer>"
+        + "</body></html>"
+    return res.html(html)
+})
+
+# ============================================================
+# LLM Provider Mock Endpoints (BlockRun & Custom OpenAI Endpoints)
+# ============================================================
+
+# Model catalog for BlockRun
+app.get("/blockrun/v1/models", fn(req, res) {
+    let raw = fs.read("/home/user/blockrun_compact.json")
+    let catalog = json.parse(raw)
+    return res.json(catalog)
+})
+
+# Chat completions for BlockRun
+app.post("/blockrun/v1/chat/completions", fn(req, res) {
+    let req_data = json.parse(req.body)
+    let requested_model = "unknown"
+    if req_data.has("model") {
+        requested_model = req_data.model
+    }
+
+    # Extract user message to provide context-aware response
+    let user_prompt = ""
+    if req_data.has("messages") {
+        for msg in req_data.messages {
+            if msg.has("role") and msg.role == "user" {
+                if typeof(msg.content) == "string" {
+                    user_prompt = msg.content
+                }
+            }
+        }
+    }
+
+    # Generate grounded response based on user prompt
+    let reply_content = "This is a simulated LLM completion from BlockRun."
+    if user_prompt.contains("Mozhi") or user_prompt.contains("Compiler") or user_prompt.contains("Keyboard") {
+        reply_content = "Based on the verified Mozhi catalog documentation, Mozhi Compiler Pro costs $99.00 and is an ahead-of-time compilation suite. Mozhi Mechanical Keyboard is available for $149.00, and the Mozhi Cotton Hoodie is priced at $45.00."
+    } else if user_prompt.contains("Data") or user_prompt.contains("datum") {
+        reply_content = "According to the source documentation, data is a collection of discrete values conveying information, describing quantity, quality, statistics, or facts. The singular form is datum, derived from the Latin word meaning 'something given'."
+    } else if user_prompt.contains("plan") or user_prompt.contains("Plan") {
+        reply_content = "{\"facts_to_establish\":[\"Product availability\",\"Pricing information\"],\"search_terms\":[\"products\",\"compiler\",\"keyboard\"],\"suggested_paths\":[\"/products\",\"/docs\"],\"completion_criteria\":\"Identify core products and pricing\"}"
+    }
+
+    return res.json({
+        id: "chatcmpl-blockrun-mock-" + string(int(time())),
+        object: "chat.completion",
+        created: int(time()),
+        model: requested_model,
+        choices: [
+            {
+                index: 0,
+                message: {
+                    role: "assistant",
+                    content: reply_content
+                },
+                finish_reason: "stop"
+            }
+        ],
+        usage: {
+            prompt_tokens: 45,
+            completion_tokens: 65,
+            total_tokens: 110
+        }
+    })
+})
+
+# Custom Provider Models
+app.get("/custom/v1/models", fn(req, res) {
+    return res.json({
+        object: "list",
+        data: [
+            {
+                id: "custom/llama-3.3-70b-instruct",
+                name: "Custom Llama 3.3 70B",
+                billing_mode: "free",
+                categories: ["chat", "reasoning", "coding"],
+                context_window: 128000,
+                pricing: { input: 0, output: 0 }
+            },
+            {
+                id: "custom/vision-pro-3b",
+                name: "Custom Vision Pro 3B",
+                billing_mode: "free",
+                categories: ["chat", "vision"],
+                context_window: 64000,
+                pricing: { input: 0, output: 0 }
+            }
+        ]
+    })
+})
+
+# Custom Provider Completions
+app.post("/custom/v1/chat/completions", fn(req, res) {
+    let req_data = json.parse(req.body)
+    let model = "custom/llama-3.3-70b-instruct"
+    if req_data.has("model") {
+        model = req_data.model
+    }
+    return res.json({
+        id: "chatcmpl-custom-" + string(int(time())),
+        object: "chat.completion",
+        created: int(time()),
+        model: model,
+        choices: [
+            {
+                index: 0,
+                message: {
+                    role: "assistant",
+                    content: "Response from Custom LLM Provider."
+                },
+                finish_reason: "stop"
+            }
+        ],
+        usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }
+    })
+})
+
+# Error simulation endpoints for testing fallback and retry mechanisms
+app.post("/error/rate-limit/chat/completions", fn(req, res) {
+    res.status(429)
+    res.header("Retry-After", "1")
+    return res.json({
+        error: {
+            message: "Rate limit reached for requests",
+            type: "requests_rate_limit",
+            code: 429
+        }
+    })
+})
+
+app.post("/error/server-error/chat/completions", fn(req, res) {
+    res.status(503)
+    return res.json({
+        error: {
+            message: "Model backend temporarily unavailable",
+            type: "service_unavailable",
+            code: 503
+        }
+    })
+})
+
+app.post("/error/unauthorized/chat/completions", fn(req, res) {
+    res.status(401)
+    return res.json({
+        error: {
+            message: "Invalid API key provided",
+            type: "invalid_request_error",
+            code: "invalid_api_key"
+        }
+    })
+})
+
+echo("Mock Site & LLM Server listening on http://127.0.0.1:8089 ...")
+app.listen("127.0.0.1", 8089)

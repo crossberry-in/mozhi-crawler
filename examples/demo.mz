@@ -6,7 +6,7 @@
 import crawler from "../src/mod.mz"
 
 echo("================================================================")
-echo("          MOZHI CRAWLER & WEB SPIDER v1.2.0 DEMO                ")
+echo("          MOZHI CRAWLER & MULTI-AGENT RESEARCH ENGINE v1.3.0 DEMO                ")
 echo("================================================================")
 
 # 1. URL Parsing, Normalization & Origin Check
@@ -101,6 +101,41 @@ for p in catalog.products {
 echo("\n--- [Demo 6] Categorized Terminal Tables ---")
 let media_page = crawler.scrape("http://127.0.0.1:8089/media-showcase")
 crawler.print_tables(media_page)
+
+# 7. Multi-Agent LLM Research Engine (BlockRun Provider)
+echo("\n--- [Demo 7] Complete Multi-Agent LLM Research Engine ---")
+let research_result = crawler.research({
+    query: "What products and developer gear does Mozhi offer and what are their prices?",
+    url: "http://127.0.0.1:8089/products",
+    provider_config: {
+        default_provider: "blockrun",
+        free_only: true,
+        providers: [
+            {
+                id: "blockrun",
+                name: "BlockRun",
+                base_url: "http://127.0.0.1:8089/blockrun/v1",
+                model_discovery: true,
+                enabled: true
+            }
+        ]
+    },
+    max_pages: 3,
+    save_cache: true,
+    cache_dir: ".crawler_cache"
+})
+
+echo("Research Completed: " + string(research_result.ok))
+echo("LLM Research Answer:\n" + research_result.answer)
+echo("Discovered Sources: " + string(research_result.sources.len()))
+echo("Verified Findings:  " + string(research_result.findings.len()))
+echo("Agents Execution Trace:")
+for a in research_result.agents {
+    echo("  - " + a.name + ": " + a.status)
+}
+
+# Print categorized research tables
+crawler.print_research_tables(research_result)
 
 echo("\n================================================================")
 echo("               DEMO FINISHED SUCCESSFULLY                       ")
