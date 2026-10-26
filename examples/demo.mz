@@ -1,29 +1,131 @@
 # ============================================================
-# Mozhi Crawler Example — run with: mozhi run examples/demo.mz
+# Mozhi Crawler Demo & Showcase — mozhi run examples/demo.mz
+# 100% Native Pure Mozhi
 # ============================================================
 
 import crawler from "../src/mod.mz"
 
-echo("=== Mozhi Crawler Demo ===")
+echo("================================================================")
+echo("             MOZHI WEB CRAWLER & SELECTOR ENGINE                ")
+echo("================================================================")
 
-# Test URL parsing
-let parsed = crawler.parse_url("http://example.com/blog/article1.html")
-echo("Host: " + parsed.host)
-echo("Path: " + parsed.path)
+# 1. URL Parsing & Resolution
+echo("\n--- [Demo 1] URL Parsing & Resolution ---")
+let parsed = crawler.parse_url("http://127.0.0.1:8089/products?category=tools#catalog")
+echo("Hostname: " + parsed.hostname)
+echo("Path:     " + parsed.path)
+echo("Query:    " + parsed.query)
+echo("Fragment: " + parsed.fragment)
 
-# Test URL resolution
-let resolved = crawler.resolve_url("http://example.com/blog/", "article2.html")
+let resolved = crawler.resolve_url("http://127.0.0.1:8089/docs/quickstart", "../blog/post-1")
 echo("Resolved: " + resolved)
 
-# Test Scraping a Page
-let data = crawler.scrape("http://127.0.0.1:8089/media-showcase")
-if data != null {
-    echo("Scraped Title:   " + data.txt.title)
-    echo("Images Found:    " + string(data.img.len()))
-    echo("Videos Found:    " + string(data.video.len()))
-    echo("Files Found:     " + string(data.files.len()))
-    echo("Internal Links:  " + string(data.links.internal.len()))
-    echo("External Links:  " + string(data.links.external.len()))
+# 2. Scraping & Categorized Tables
+echo("\n--- [Demo 2] Scraping & Categorized Tables ---")
+let page = crawler.scrape("http://127.0.0.1:8089/media-showcase")
+if page != null {
+    echo("Scraped Title:  " + page.txt.title)
+    echo("Images:         " + string(page.img.len()))
+    echo("Videos:         " + string(page.video.len()))
+    echo("Files:          " + string(page.files.len()))
+    echo("Internal Links: " + string(page.links.internal.len()))
+    echo("External Links: " + string(page.links.external.len()))
+
+    # Print pretty categorized tables
+    crawler.print_tables(page)
 }
 
-echo("=== Demo Finished Successfully ===")
+# 3. CSS Selector Engine & DOM Queries
+echo("\n--- [Demo 3] CSS Selector Engine ---")
+let product_page = crawler.scrape("http://127.0.0.1:8089/products")
+if product_page != null {
+    let doc = product_page.doc
+
+    # Query all product titles
+    let titles = crawler.query_selector_all(doc, "article.product-item h2.prod-title", null)
+    echo("Found " + string(titles.len()) + " products via CSS selector 'article.product-item h2.prod-title':")
+    for tid in titles {
+        echo("  - " + crawler.node_text(doc, tid))
+    }
+
+    # Query featured product
+    let feat = crawler.query_selector(doc, "article.product-item.featured", null)
+    if feat != null {
+        let price_nid = crawler.query_selector(doc, ".prod-price", feat)
+        echo("Featured product price: " + crawler.node_text(doc, price_nid))
+    }
+}
+
+# 4. Declarative Schema Extraction
+echo("\n--- [Demo 4] Declarative Schema Extraction ---")
+let product_schema = {
+    "catalog_title": "header h1",
+    "products": {
+        "selector": "article.product-item",
+        "multiple": true,
+        "fields": {
+            "id": { "attribute": "data-id" },
+            "category": { "attribute": "data-category" },
+            "name": "h2.prod-title",
+            "price": "span.prod-price",
+            "description": "p.prod-desc",
+            "buy_link": { "selector": "a.buy", "attribute": "href" }
+        }
+    }
+}
+
+let extracted = crawler.extract(product_page.doc, product_schema)
+echo("Catalog: " + extracted.catalog_title)
+for prod in extracted.products {
+    echo("  [" + prod.id + "] (" + prod.category + ") " + prod.name + " - " + prod.price)
+    echo("    Buy URL: " + prod.buy_link)
+    echo("    Desc:    " + prod.description)
+}
+
+# 5. Robots.txt and Sitemap Parsing
+echo("\n--- [Demo 5] Robots.txt & Sitemap Parsing ---")
+let sitemap_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    + "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n"
+    + "  <url><loc>http://127.0.0.1:8089/</loc><priority>1.0</priority></url>\n"
+    + "  <url><loc>http://127.0.0.1:8089/about</loc><priority>0.8</priority></url>\n"
+    + "  <url><loc>http://127.0.0.1:8089/products</loc><priority>0.9</priority></url>\n"
+    + "</urlset>"
+
+let sitemap_urls = crawler.parse_sitemap(sitemap_xml)
+echo("Parsed Sitemap URLs: " + string(sitemap_urls.len()))
+for u in sitemap_urls { echo("  Loc: " + u) }
+
+# 6. BFS Web Crawling & Live JSON Export
+echo("\n--- [Demo 6] BFS Crawler with Live JSON Result ---")
+let crawl_res = crawler.crawl({
+    url: "http://127.0.0.1:8089/",
+    max_pages: 5,
+    max_depth: 2,
+    robots_txt: false,
+    allow_private_ips: true,
+    export_json_path: "live_result.json"
+})
+
+echo("Total Pages Crawled: " + string(crawl_res.total_pages))
+for p in crawl_res.pages {
+    echo("  Crawled: " + p.url + " (" + p.txt.title + ") - " + string(p.links.internal.len()) + " internal links")
+}
+echo("Saved live JSON result to: live_result.json")
+
+# Export to CSV
+let csv_rows = []
+for p in crawl_res.pages {
+    csv_rows.push({
+        url: p.url,
+        title: p.txt.title,
+        images_count: p.img.len(),
+        files_count: p.files.len(),
+        links_count: p.links.internal.len()
+    })
+}
+crawler.export_csv(["url", "title", "images_count", "files_count", "links_count"], csv_rows, "crawled_summary.csv")
+echo("Exported summary to: crawled_summary.csv")
+
+echo("\n================================================================")
+echo("               DEMO FINISHED SUCCESSFULLY                       ")
+echo("================================================================")

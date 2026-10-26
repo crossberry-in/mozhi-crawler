@@ -1,13 +1,14 @@
 # ============================================================
-# crawler — Web crawler & media extractor for Mozhi (v1.0.0)
-# Zero database dependencies; 100% native Mozhi stdlib
+# crawler — Production-Ready Web Crawler & Selector Engine for Mozhi
+# 100% Native Pure Mozhi; Zero External Libraries / Zero Database
 # ============================================================
 
 import http
 import json
+import fs
 
 # ------------------------------------------------------------
-# URL Utilities
+# Section 1: URL Normalization & Resolution
 # ------------------------------------------------------------
 
 fn clean_fragment(url) {
@@ -25,57 +26,139 @@ fn parse_url(raw_url) {
     let result = {
         valid: false,
         protocol: "",
+        scheme: "",
         host: "",
+        hostname: "",
+        port: "",
         path: "/",
+        query: "",
+        fragment: "",
         full: ""
     }
     if raw_url == null {
         return result
     }
 
-    let url = clean_fragment(raw_url).trim()
+    let working = raw_url.trim()
+    let frag_idx = index(working, "#")
+    if frag_idx != -1 {
+        result.fragment = working.slice(frag_idx + 1, working.len())
+        working = working.slice(0, frag_idx)
+    }
+
+    let q_idx = index(working, "?")
+    if q_idx != -1 {
+        result.query = working.slice(q_idx + 1, working.len())
+        working = working.slice(0, q_idx)
+    }
+
     let proto = ""
     let rest = ""
 
-    if url.starts_with("http://") {
+    if working.starts_with("http://") {
         proto = "http"
-        rest = url.slice(7, url.len())
-    } else if url.starts_with("https://") {
+        rest = working.slice(7, working.len())
+    } else if working.starts_with("https://") {
         proto = "https"
-        rest = url.slice(8, url.len())
+        rest = working.slice(8, working.len())
     } else {
         return result
     }
 
     result.protocol = proto
-    let slash_idx = index(rest, "/")
+    result.scheme = proto
 
-    if slash_idx == -1 {
-        result.host = rest
-        result.path = "/"
-    } else {
-        result.host = rest.slice(0, slash_idx)
+    let slash_idx = index(rest, "/")
+    let host_part = rest
+    if slash_idx != -1 {
+        host_part = rest.slice(0, slash_idx)
         result.path = rest.slice(slash_idx, rest.len())
+    } else {
+        result.path = "/"
+    }
+
+    result.host = host_part
+    let colon_idx = index(host_part, ":")
+    if colon_idx != -1 {
+        result.hostname = host_part.slice(0, colon_idx).lower()
+        result.port = host_part.slice(colon_idx + 1, host_part.len())
+    } else {
+        result.hostname = host_part.lower()
+        result.port = ""
     }
 
     result.valid = true
-    result.full = proto + "://" + result.host + result.path
+    let port_str = ""
+    if result.port.len() > 0 {
+        if not ((proto == "http" and result.port == "80") or (proto == "https" and result.port == "443")) {
+            port_str = ":" + result.port
+        }
+    }
+    result.full = proto + "://" + result.hostname + port_str + result.path
     return result
 }
 
-fn same_host(url1, url2) {
-    if url1 == null {
-        return false
+fn normalize_path(path) {
+    if path == null or path == "" or path == "/" {
+        return "/"
     }
-    if url2 == null {
+    let has_leading = path.starts_with("/")
+    let has_trailing = path.ends_with("/") and path.len() > 1
+
+    let segments = path.split("/")
+    let stack = []
+
+    for seg in segments {
+        if seg == "" or seg == "." {
+            # skip current directory or empty
+        } else if seg == ".." {
+            if stack.len() > 0 {
+                stack.pop()
+            }
+        } else {
+            stack.push(seg)
+        }
+    }
+
+    let res = join(stack, "/")
+    if has_leading {
+        res = "/" + res
+    }
+    if has_trailing and not res.ends_with("/") {
+        res = res + "/"
+    }
+    if res == "" {
+        res = "/"
+    }
+    return res
+}
+
+fn normalize_url(url) {
+    let p = parse_url(url)
+    if not p.valid {
+        return url
+    }
+    let norm_p = normalize_path(p.path)
+    let port_str = ""
+    if p.port.len() > 0 {
+        if not ((p.protocol == "http" and p.port == "80") or (p.protocol == "https" and p.port == "443")) {
+            port_str = ":" + p.port
+        }
+    }
+    let q_str = ""
+    if p.query.len() > 0 {
+        q_str = "?" + p.query
+    }
+    return p.protocol + "://" + p.hostname + port_str + norm_p + q_str
+}
+
+fn same_host(url1, url2) {
+    if url1 == null or url2 == null {
         return false
     }
     let p1 = parse_url(url1)
     let p2 = parse_url(url2)
-    if p1.valid == false {
-        return false
-    }
-    if p2.valid == false {
+    if not p1.valid or not p2.valid {
         return false
     }
     return p1.host.lower() == p2.host.lower()
@@ -101,45 +184,53 @@ fn resolve_url(base_url, href) {
     if trimmed.starts_with("http://") or trimmed.starts_with("https://") {
         let p = parse_url(trimmed)
         if p.valid {
-            return p.full
+            return normalize_url(trimmed)
         }
         return null
     }
 
     let base = parse_url(base_url)
-    if base.valid == false {
+    if not base.valid {
         return null
     }
 
+    let port_str = ""
+    if base.port.len() > 0 {
+        if not ((base.protocol == "http" and base.port == "80") or (base.protocol == "https" and base.port == "443")) {
+            port_str = ":" + base.port
+        }
+    }
+    let origin = base.protocol + "://" + base.hostname + port_str
+
     if trimmed.starts_with("//") {
-        return base.protocol + ":" + trimmed
+        return normalize_url(base.protocol + ":" + trimmed)
     }
 
     if trimmed.starts_with("/") {
-        let p = parse_url(base.protocol + "://" + base.host + trimmed)
-        return p.full
+        return normalize_url(origin + trimmed)
+    }
+
+    if trimmed.starts_with("?") {
+        return normalize_url(origin + base.path + trimmed)
+    }
+
+    # Relative path resolution
+    let last_slash = -1
+    let i = base.path.len() - 1
+    while i >= 0 {
+        if base.path.slice(i, i + 1) == "/" {
+            last_slash = i
+            break
+        }
+        i = i - 1
     }
 
     let dir = "/"
-    if base.path.ends_with("/") {
-        dir = base.path
-    } else {
-        let last_slash = -1
-        let i = 0
-        while i < base.path.len() {
-            if base.path.slice(i, i + 1) == "/" {
-                last_slash = i
-            }
-            i = i + 1
-        }
-        if last_slash >= 0 {
-            dir = base.path.slice(0, last_slash + 1)
-        }
+    if last_slash >= 0 {
+        dir = base.path.slice(0, last_slash + 1)
     }
 
-    let combined = base.protocol + "://" + base.host + dir + trimmed
-    let p = parse_url(combined)
-    return p.full
+    return normalize_url(origin + dir + trimmed)
 }
 
 fn get_file_extension(url) {
@@ -171,200 +262,1231 @@ fn get_file_extension(url) {
 }
 
 # ------------------------------------------------------------
-# HTML Attribute & Tag Parsing
+# Section 2: Security & SSRF Protection
 # ------------------------------------------------------------
 
-fn get_attr(tag_str, attr_name) {
-    if tag_str == null {
-        return ""
+fn is_private_ip(host) {
+    if host == null {
+        return false
     }
-    let lower = tag_str.lower()
-    let marker = attr_name.lower() + "="
-    let pos = index(lower, marker)
-    if pos == -1 {
-        return ""
+    let h = host.lower()
+
+    if h == "localhost" or h.ends_with(".localhost") or h == "127.0.0.1" or h == "0.0.0.0" {
+        return true
+    }
+    if h == "::1" or h == "[::1]" or h.contains("::") {
+        return true
     }
 
-    let val_start = pos + marker.len()
-    if val_start >= tag_str.len() {
-        return ""
+    let colon = index(h, ":")
+    if colon != -1 and not h.starts_with("[") {
+        h = h.slice(0, colon)
     }
 
-    let quote = tag_str.slice(val_start, val_start + 1)
-    if quote == "\"" or quote == "'" {
-        let end_quote = index(tag_str.slice(val_start + 1, tag_str.len()), quote)
-        if end_quote != -1 {
-            return tag_str.slice(val_start + 1, val_start + 1 + end_quote).trim()
-        }
-    } else {
-        let space_idx = index(tag_str.slice(val_start, tag_str.len()), " ")
-        let gt_idx = index(tag_str.slice(val_start, tag_str.len()), ">")
-        let end_idx = -1
-        if space_idx != -1 and gt_idx != -1 {
-            if space_idx < gt_idx {
-                end_idx = space_idx
-            } else {
-                end_idx = gt_idx
+    let parts = h.split(".")
+    if parts.len() == 4 {
+        let is_all_num = true
+        let octets = []
+        for p in parts {
+            if p.len() == 0 {
+                is_all_num = false
+                break
             }
-        } else if space_idx != -1 {
-            end_idx = space_idx
-        } else if gt_idx != -1 {
-            end_idx = gt_idx
+            let val = int(p)
+            if string(val) != p or val < 0 or val > 255 {
+                is_all_num = false
+                break
+            }
+            octets.push(val)
         }
-        if end_idx != -1 {
-            return tag_str.slice(val_start, val_start + end_idx).trim()
+
+        if is_all_num {
+            let o0 = octets[0]
+            let o1 = octets[1]
+            # 127.0.0.0/8 (Loopback)
+            if o0 == 127 { return true }
+            # 10.0.0.0/8 (Private network)
+            if o0 == 10 { return true }
+            # 172.16.0.0/12 (Private network: 172.16 - 172.31)
+            if o0 == 172 and (o1 >= 16 and o1 <= 31) { return true }
+            # 192.168.0.0/16 (Private network)
+            if o0 == 192 and o1 == 168 { return true }
+            # 169.254.0.0/16 (Link-local / cloud metadata)
+            if o0 == 169 and o1 == 254 { return true }
+            # 0.0.0.0/8
+            if o0 == 0 { return true }
         }
+    }
+    return false
+}
+
+fn validate_target_url(url, allow_private_ips) {
+    let p = parse_url(url)
+    if not p.valid {
+        return { valid: false, reason: "Invalid URL structure" }
+    }
+    if p.protocol != "http" and p.protocol != "https" {
+        return { valid: false, reason: "Unsupported protocol: " + p.protocol }
+    }
+    if not allow_private_ips and is_private_ip(p.host) {
+        return { valid: false, reason: "SSRF protection blocked destination: " + p.host }
+    }
+    return { valid: true, reason: "" }
+}
+
+# ------------------------------------------------------------
+# Section 3: HTML DOM Tree & Tokenizer
+# ------------------------------------------------------------
+
+fn html_unescape(text) {
+    if text == null {
+        return ""
+    }
+    let s = text.replace("&amp;", "&")
+    s = s.replace("&lt;", "<")
+    s = s.replace("&gt;", ">")
+    s = s.replace("&quot;", "\"")
+    s = s.replace("&#39;", "'")
+    s = s.replace("&apos;", "'")
+    s = s.replace("&nbsp;", " ")
+    return s
+}
+
+fn parse_attrs(tag_str) {
+    let attrs = {}
+    let i = 0
+    let n = tag_str.len()
+
+    while i < n {
+        while i < n and (tag_str.slice(i, i + 1) == " " or tag_str.slice(i, i + 1) == "\t" or tag_str.slice(i, i + 1) == "\n" or tag_str.slice(i, i + 1) == "\r") {
+            i = i + 1
+        }
+        if i >= n { break }
+
+        let name_start = i
+        while i < n {
+            let c = tag_str.slice(i, i + 1)
+            if c == "=" or c == " " or c == "\t" or c == "\n" or c == "\r" or c == "/" or c == ">" {
+                break
+            }
+            i = i + 1
+        }
+        let attr_name = tag_str.slice(name_start, i).lower()
+        if attr_name.len() == 0 {
+            i = i + 1
+            continue
+        }
+
+        while i < n and (tag_str.slice(i, i + 1) == " " or tag_str.slice(i, i + 1) == "\t" or tag_str.slice(i, i + 1) == "\n" or tag_str.slice(i, i + 1) == "\r") {
+            i = i + 1
+        }
+
+        let attr_val = ""
+        if i < n and tag_str.slice(i, i + 1) == "=" {
+            i = i + 1
+            while i < n and (tag_str.slice(i, i + 1) == " " or tag_str.slice(i, i + 1) == "\t" or tag_str.slice(i, i + 1) == "\n" or tag_str.slice(i, i + 1) == "\r") {
+                i = i + 1
+            }
+            if i < n {
+                let quote = tag_str.slice(i, i + 1)
+                if quote == "\"" or quote == "'" {
+                    i = i + 1
+                    let val_start = i
+                    while i < n and tag_str.slice(i, i + 1) != quote {
+                        i = i + 1
+                    }
+                    attr_val = tag_str.slice(val_start, i)
+                    if i < n { i = i + 1 }
+                } else {
+                    let val_start = i
+                    while i < n {
+                        let c = tag_str.slice(i, i + 1)
+                        if c == " " or c == "\t" or c == "\n" or c == "\r" or c == ">" or c == "/" {
+                            break
+                        }
+                        i = i + 1
+                    }
+                    attr_val = tag_str.slice(val_start, i)
+                }
+            }
+        }
+        attrs[attr_name] = html_unescape(attr_val)
+    }
+    return attrs
+}
+
+fn parse_html(html) {
+    let doc = {
+        nodes: {},
+        root_ids: [],
+        next_id: 0
+    }
+
+    if html == null {
+        return doc
+    }
+
+    let is_void = {
+        "area": true, "base": true, "br": true, "col": true, "embed": true,
+        "hr": true, "img": true, "input": true, "link": true, "meta": true,
+        "param": true, "source": true, "track": true, "wbr": true
+    }
+
+    let is_raw = {
+        "script": true, "style": true, "textarea": true, "title": true
+    }
+
+    let stack = []
+    let i = 0
+    let n = html.len()
+
+    while i < n {
+        let tag_open = index(html.slice(i, n), "<")
+        if tag_open == -1 {
+            let text = html.slice(i, n).trim()
+            if text.len() > 0 {
+                let nid = doc.next_id
+                doc.next_id = doc.next_id + 1
+                let parent_id = -1
+                if stack.len() > 0 { parent_id = stack[stack.len() - 1] }
+                doc.nodes[string(nid)] = {
+                    id: nid,
+                    type: "text",
+                    tag: "#text",
+                    text: html_unescape(text),
+                    attributes: {},
+                    children: [],
+                    parent: parent_id
+                }
+                if parent_id != -1 {
+                    let p = doc.nodes[string(parent_id)]
+                    let ch = p.children
+                    ch.push(nid)
+                    p.children = ch
+                    doc.nodes[string(parent_id)] = p
+                } else {
+                    doc.root_ids.push(nid)
+                }
+            }
+            break
+        }
+
+        let tag_pos = i + tag_open
+        if tag_pos > i {
+            let text = html.slice(i, tag_pos)
+            let trimmed = text.trim()
+            if trimmed.len() > 0 {
+                let nid = doc.next_id
+                doc.next_id = doc.next_id + 1
+                let parent_id = -1
+                if stack.len() > 0 { parent_id = stack[stack.len() - 1] }
+                doc.nodes[string(nid)] = {
+                    id: nid,
+                    type: "text",
+                    tag: "#text",
+                    text: html_unescape(trimmed),
+                    attributes: {},
+                    children: [],
+                    parent: parent_id
+                }
+                if parent_id != -1 {
+                    let p = doc.nodes[string(parent_id)]
+                    let ch = p.children
+                    ch.push(nid)
+                    p.children = ch
+                    doc.nodes[string(parent_id)] = p
+                } else {
+                    doc.root_ids.push(nid)
+                }
+            }
+        }
+
+        # Check comment
+        if html.slice(tag_pos, tag_pos + 4) == "<!--" {
+            let comment_end = index(html.slice(tag_pos + 4, n), "-->")
+            if comment_end == -1 { break }
+            i = tag_pos + 4 + comment_end + 3
+            continue
+        }
+
+        # Check doctype
+        if html.slice(tag_pos, tag_pos + 2).lower() == "<!" {
+            let dt_end = index(html.slice(tag_pos, n), ">")
+            if dt_end == -1 { break }
+            i = tag_pos + dt_end + 1
+            continue
+        }
+
+        let tag_close = index(html.slice(tag_pos, n), ">")
+        if tag_close == -1 { break }
+        let full_tag = html.slice(tag_pos + 1, tag_pos + tag_close).trim()
+        i = tag_pos + tag_close + 1
+
+        # Closing tag
+        if full_tag.starts_with("/") {
+            let close_name = full_tag.slice(1, full_tag.len()).trim().lower()
+            let found_idx = -1
+            let k = stack.len() - 1
+            while k >= 0 {
+                let candidate = doc.nodes[string(stack[k])]
+                if candidate.tag == close_name {
+                    found_idx = k
+                    break
+                }
+                k = k - 1
+            }
+            if found_idx != -1 {
+                while stack.len() > found_idx {
+                    stack.pop()
+                }
+            }
+            continue
+        }
+
+        let is_self_closing = false
+        if full_tag.ends_with("/") {
+            is_self_closing = true
+            full_tag = full_tag.slice(0, full_tag.len() - 1).trim()
+        }
+
+        let first_space = index(full_tag, " ")
+        let tag_name = ""
+        let attrs_str = ""
+        if first_space == -1 {
+            tag_name = full_tag.lower()
+        } else {
+            tag_name = full_tag.slice(0, first_space).lower()
+            attrs_str = full_tag.slice(first_space + 1, full_tag.len())
+        }
+
+        let parsed_attrs = parse_attrs(attrs_str)
+        let nid = doc.next_id
+        doc.next_id = doc.next_id + 1
+        let parent_id = -1
+        if stack.len() > 0 { parent_id = stack[stack.len() - 1] }
+
+        doc.nodes[string(nid)] = {
+            id: nid,
+            type: "element",
+            tag: tag_name,
+            text: "",
+            attributes: parsed_attrs,
+            children: [],
+            parent: parent_id
+        }
+
+        if parent_id != -1 {
+            let p = doc.nodes[string(parent_id)]
+            let ch = p.children
+            ch.push(nid)
+            p.children = ch
+            doc.nodes[string(parent_id)] = p
+        } else {
+            doc.root_ids.push(nid)
+        }
+
+        if is_raw[tag_name] == true {
+            let end_pattern = "</" + tag_name + ">"
+            let lower_rem = html.slice(i, n).lower()
+            let raw_end = index(lower_rem, end_pattern)
+            if raw_end != -1 {
+                let raw_content = html.slice(i, i + raw_end)
+                i = i + raw_end + end_pattern.len()
+                let cid = doc.next_id
+                doc.next_id = doc.next_id + 1
+                doc.nodes[string(cid)] = {
+                    id: cid,
+                    type: "text",
+                    tag: "#text",
+                    text: raw_content,
+                    attributes: {},
+                    children: [],
+                    parent: nid
+                }
+                let cur = doc.nodes[string(nid)]
+                let ch = cur.children
+                ch.push(cid)
+                cur.children = ch
+                doc.nodes[string(nid)] = cur
+            }
+            continue
+        }
+
+        if is_void[tag_name] != true and not is_self_closing {
+            stack.push(nid)
+        }
+    }
+    return doc
+}
+
+fn node_text(doc, nid) {
+    if nid == null { return "" }
+    let node = doc.nodes[string(nid)]
+    if node == null { return "" }
+    if node.type == "text" { return node.text }
+
+    let parts = []
+    for cid in node.children {
+        let t = node_text(doc, cid)
+        if t.len() > 0 { parts.push(t) }
+    }
+    return join(parts, " ")
+}
+
+fn node_attr(doc, nid, attr_name) {
+    if nid == null or attr_name == null { return "" }
+    let node = doc.nodes[string(nid)]
+    if node == null or node.type != "element" { return "" }
+    let lower_name = attr_name.lower()
+    if node.attributes.has(lower_name) {
+        return node.attributes[lower_name]
     }
     return ""
 }
 
-fn strip_tags(raw) {
-    if raw == null {
-        return ""
+fn node_inner_html(doc, nid) {
+    if nid == null { return "" }
+    let node = doc.nodes[string(nid)]
+    if node == null { return "" }
+    if node.type == "text" { return node.text }
+    let inner = ""
+    for cid in node.children {
+        inner = inner + node_html(doc, cid)
     }
-    let clean = ""
-    let inside = false
+    return inner
+}
+
+fn node_html(doc, nid) {
+    if nid == null { return "" }
+    let node = doc.nodes[string(nid)]
+    if node == null { return "" }
+    if node.type == "text" { return node.text }
+
+    let parts = ["<" + node.tag]
+    for k in node.attributes.keys() {
+        let v = node.attributes[k]
+        parts.push(k + "=\"" + v.replace("\"", "&quot;") + "\"")
+    }
+    let tag_head = join(parts, " ")
+
+    let is_void = {
+        "area": true, "base": true, "br": true, "col": true, "embed": true,
+        "hr": true, "img": true, "input": true, "link": true, "meta": true,
+        "param": true, "source": true, "track": true, "wbr": true
+    }
+
+    if is_void.has(node.tag) {
+        return tag_head + " />"
+    }
+
+    let inner = node_inner_html(doc, nid)
+    return tag_head + ">" + inner + "</" + node.tag + ">"
+}
+
+fn get_all_element_descendants(doc, nid) {
+    let res = []
+    if nid == null { return res }
+    let node = doc.nodes[string(nid)]
+    if node == null { return res }
+    for cid in node.children {
+        let child = doc.nodes[string(cid)]
+        if child != null and child.type == "element" {
+            res.push(cid)
+        }
+        let sub = get_all_element_descendants(doc, cid)
+        for s in sub { res.push(s) }
+    }
+    return res
+}
+
+fn get_all_doc_elements(doc) {
+    let res = []
+    let total = doc.next_id
     let i = 0
-    let n = raw.len()
-    while i < n {
-        let ch = raw.slice(i, i + 1)
-        if ch == "<" {
-            inside = true
-        } else if ch == ">" {
-            inside = false
-        } else if inside == false {
-            clean = clean + ch
+    while i < total {
+        let node = doc.nodes[string(i)]
+        if node != null and node.type == "element" {
+            res.push(i)
         }
         i = i + 1
     }
-    return clean.trim()
-}
-
-fn sanitize_text(s) {
-    if s == null {
-        return ""
-    }
-    let clean = ""
-    let prev_space = false
-    let i = 0
-    let n = s.len()
-    while i < n {
-        let ch = s.slice(i, i + 1)
-        if ch == "\n" or ch == "\r" or ch == "\t" or ch == " " {
-            if prev_space == false {
-                clean = clean + " "
-                prev_space = true
-            }
-        } else {
-            clean = clean + ch
-            prev_space = false
-        }
-        i = i + 1
-    }
-    return clean.trim()
-}
-
-fn find_all_tags(html, tag_name) {
-    let results = []
-    let lower = html.lower()
-    let marker = "<" + tag_name.lower()
-    let cursor = 0
-    let total_len = html.len()
-
-    while cursor < total_len {
-        let remaining = lower.slice(cursor, total_len)
-        let pos = index(remaining, marker)
-        if pos == -1 {
-            break
-        }
-
-        let tag_start = cursor + pos
-        let next_char_idx = tag_start + marker.len()
-        let is_valid = false
-        if next_char_idx < total_len {
-            let ch = lower.slice(next_char_idx, next_char_idx + 1)
-            if ch == " " or ch == ">" or ch == "/" or ch == "\n" or ch == "\t" or ch == "\r" {
-                is_valid = true
-            }
-        }
-
-        if is_valid {
-            let gt_pos = index(lower.slice(tag_start, total_len), ">")
-            if gt_pos != -1 {
-                let full_tag = html.slice(tag_start, tag_start + gt_pos + 1)
-                results.push(full_tag)
-                cursor = tag_start + gt_pos + 1
-            } else {
-                cursor = tag_start + marker.len()
-            }
-        } else {
-            cursor = tag_start + marker.len()
-        }
-    }
-    return results
-}
-
-fn find_paired_elements(html, tag_name) {
-    let results = []
-    let lower = html.lower()
-    let open_marker = "<" + tag_name.lower()
-    let close_marker = "</" + tag_name.lower() + ">"
-    let cursor = 0
-    let total_len = html.len()
-
-    while cursor < total_len {
-        let remaining = lower.slice(cursor, total_len)
-        let open_rel = index(remaining, open_marker)
-        if open_rel == -1 {
-            break
-        }
-
-        let start_pos = cursor + open_rel
-        let next_char_idx = start_pos + open_marker.len()
-        let is_valid = false
-        if next_char_idx < total_len {
-            let ch = lower.slice(next_char_idx, next_char_idx + 1)
-            if ch == " " or ch == ">" or ch == "/" or ch == "\n" or ch == "\t" or ch == "\r" {
-                is_valid = true
-            }
-        }
-
-        if is_valid {
-            let gt_rel = index(lower.slice(start_pos, total_len), ">")
-            if gt_rel != -1 {
-                let open_tag = html.slice(start_pos, start_pos + gt_rel + 1)
-                let content_start = start_pos + gt_rel + 1
-                let close_rel = index(lower.slice(content_start, total_len), close_marker)
-                if close_rel != -1 {
-                    let inner_raw = html.slice(content_start, content_start + close_rel)
-                    results.push({
-                        tag: open_tag,
-                        inner: sanitize_text(strip_tags(inner_raw))
-                    })
-                    cursor = content_start + close_rel + close_marker.len()
-                } else {
-                    cursor = content_start
-                }
-            } else {
-                cursor = start_pos + open_marker.len()
-            }
-        } else {
-            cursor = start_pos + open_marker.len()
-        }
-    }
-    return results
+    return res
 }
 
 # ------------------------------------------------------------
-# Classifiers
+# Section 4: Full CSS Selector Engine
+# ------------------------------------------------------------
+
+fn is_ident_char(ch) {
+    if ch >= "a" and ch <= "z" { return true }
+    if ch >= "A" and ch <= "Z" { return true }
+    if ch >= "0" and ch <= "9" { return true }
+    if ch == "-" or ch == "_" { return true }
+    return false
+}
+
+fn parse_unit(s) {
+    let unit = {
+        tag: "",
+        id: "",
+        classes: [],
+        attributes: [],
+        pseudos: []
+    }
+
+    let i = 0
+    let n = s.len()
+
+    if i < n and (is_ident_char(s.slice(i, i + 1)) or s.slice(i, i + 1) == "*") {
+        let start = i
+        while i < n and (is_ident_char(s.slice(i, i + 1)) or s.slice(i, i + 1) == "*") {
+            i = i + 1
+        }
+        unit.tag = s.slice(start, i).lower()
+    }
+
+    while i < n {
+        let ch = s.slice(i, i + 1)
+        if ch == "#" {
+            i = i + 1
+            let start = i
+            while i < n and is_ident_char(s.slice(i, i + 1)) { i = i + 1 }
+            unit.id = s.slice(start, i)
+        } else if ch == "." {
+            i = i + 1
+            let start = i
+            while i < n and is_ident_char(s.slice(i, i + 1)) { i = i + 1 }
+            unit.classes.push(s.slice(start, i))
+        } else if ch == "[" {
+            i = i + 1
+            let start = i
+            let in_quote = ""
+            while i < n {
+                let c = s.slice(i, i + 1)
+                if in_quote != "" {
+                    if c == in_quote { in_quote = "" }
+                } else {
+                    if c == "\"" or c == "'" { in_quote = c }
+                    else if c == "]" { break }
+                }
+                i = i + 1
+            }
+            let raw_attr = s.slice(start, i).trim()
+            if i < n { i = i + 1 }
+
+            let op = ""
+            let op_pos = -1
+            let op_len = 1
+            let cand_ops = ["^=", "$=", "*=", "~=", "="]
+            for o in cand_ops {
+                let idx = index(raw_attr, o)
+                if idx != -1 {
+                    op = o
+                    op_pos = idx
+                    op_len = o.len()
+                    break
+                }
+            }
+
+            if op_pos != -1 {
+                let attr_name = raw_attr.slice(0, op_pos).trim().lower()
+                let attr_val = raw_attr.slice(op_pos + op_len, raw_attr.len()).trim()
+                if (attr_val.starts_with("\"") and attr_val.ends_with("\"")) or
+                   (attr_val.starts_with("'") and attr_val.ends_with("'")) {
+                    attr_val = attr_val.slice(1, attr_val.len() - 1)
+                }
+                unit.attributes.push({ name: attr_name, op: op, val: attr_val })
+            } else {
+                unit.attributes.push({ name: raw_attr.lower(), op: "", val: "" })
+            }
+        } else if ch == ":" {
+            i = i + 1
+            let start = i
+            while i < n and (is_ident_char(s.slice(i, i + 1)) or s.slice(i, i + 1) == "-") {
+                i = i + 1
+            }
+            let pname = s.slice(start, i).lower()
+            let parg = ""
+            if i < n and s.slice(i, i + 1) == "(" {
+                i = i + 1
+                let arg_start = i
+                while i < n and s.slice(i, i + 1) != ")" { i = i + 1 }
+                parg = s.slice(arg_start, i).trim()
+                if i < n { i = i + 1 }
+            }
+            unit.pseudos.push({ name: pname, arg: parg })
+        } else {
+            i = i + 1
+        }
+    }
+    return unit
+}
+
+fn split_selector_groups(s) {
+    let groups = []
+    let i = 0
+    let n = s.len()
+    let start = 0
+    let in_bracket = 0
+    let in_paren = 0
+    let in_quote = ""
+
+    while i < n {
+        let c = s.slice(i, i + 1)
+        if in_quote != "" {
+            if c == in_quote { in_quote = "" }
+        } else {
+            if c == "\"" or c == "'" { in_quote = c }
+            else if c == "[" { in_bracket = in_bracket + 1 }
+            else if c == "]" and in_bracket > 0 { in_bracket = in_bracket - 1 }
+            else if c == "(" { in_paren = in_paren + 1 }
+            else if c == ")" and in_paren > 0 { in_paren = in_paren - 1 }
+            else if c == "," and in_bracket == 0 and in_paren == 0 {
+                let part = s.slice(start, i).trim()
+                if part.len() > 0 { groups.push(part) }
+                start = i + 1
+            }
+        }
+        i = i + 1
+    }
+    let last = s.slice(start, n).trim()
+    if last.len() > 0 { groups.push(last) }
+    return groups
+}
+
+fn tokenize_group(s) {
+    let steps = []
+    let i = 0
+    let n = s.len()
+    let current_comb = ""
+
+    while i < n {
+        while i < n and (s.slice(i, i + 1) == " " or s.slice(i, i + 1) == "\t") {
+            i = i + 1
+        }
+        if i >= n { break }
+
+        if s.slice(i, i + 1) == ">" {
+            current_comb = ">"
+            i = i + 1
+            while i < n and (s.slice(i, i + 1) == " " or s.slice(i, i + 1) == "\t") {
+                i = i + 1
+            }
+        }
+
+        let start = i
+        let in_bracket = 0
+        let in_paren = 0
+        let in_quote = ""
+
+        while i < n {
+            let c = s.slice(i, i + 1)
+            if in_quote != "" {
+                if c == in_quote { in_quote = "" }
+            } else {
+                if c == "\"" or c == "'" { in_quote = c }
+                else if c == "[" { in_bracket = in_bracket + 1 }
+                else if c == "]" and in_bracket > 0 { in_bracket = in_bracket - 1 }
+                else if c == "(" { in_paren = in_paren + 1 }
+                else if c == ")" and in_paren > 0 { in_paren = in_paren - 1 }
+                else if in_bracket == 0 and in_paren == 0 {
+                    if c == " " or c == "\t" or c == ">" {
+                        break
+                    }
+                }
+            }
+            i = i + 1
+        }
+
+        let unit_str = s.slice(start, i).trim()
+        if unit_str.len() > 0 {
+            steps.push({ combinator: current_comb, unit: parse_unit(unit_str) })
+        }
+
+        current_comb = " "
+        while i < n and (s.slice(i, i + 1) == " " or s.slice(i, i + 1) == "\t") {
+            i = i + 1
+        }
+        if i < n and s.slice(i, i + 1) == ">" {
+            current_comb = ">"
+            i = i + 1
+        }
+    }
+    return steps
+}
+
+fn node_has_class(node, cls) {
+    if not node.attributes.has("class") { return false }
+    let raw = node.attributes["class"]
+    let parts = raw.split(" ")
+    for p in parts {
+        if p.trim() == cls { return true }
+    }
+    return false
+}
+
+fn matches_unit(doc, nid, unit) {
+    let node = doc.nodes[string(nid)]
+    if node == null or node.type != "element" { return false }
+
+    if unit.tag.len() > 0 and unit.tag != "*" {
+        if node.tag != unit.tag { return false }
+    }
+
+    if unit.id.len() > 0 {
+        if not node.attributes.has("id") or node.attributes["id"] != unit.id {
+            return false
+        }
+    }
+
+    for c in unit.classes {
+        if not node_has_class(node, c) { return false }
+    }
+
+    for attr in unit.attributes {
+        if not node.attributes.has(attr.name) { return false }
+        let val = node.attributes[attr.name]
+        if attr.op == "=" {
+            if val != attr.val { return false }
+        } else if attr.op == "^=" {
+            if not val.starts_with(attr.val) { return false }
+        } else if attr.op == "$=" {
+            if not val.ends_with(attr.val) { return false }
+        } else if attr.op == "*=" {
+            if not val.contains(attr.val) { return false }
+        } else if attr.op == "~=" {
+            let words = val.split(" ")
+            let found = false
+            for w in words {
+                if w.trim() == attr.val { found = true; break }
+            }
+            if not found { return false }
+        }
+    }
+
+    for p in unit.pseudos {
+        if p.name == "first-child" {
+            if node.parent == -1 { return false }
+            let parent_node = doc.nodes[string(node.parent)]
+            let first_elem_id = -1
+            for cid in parent_node.children {
+                if doc.nodes[string(cid)].type == "element" {
+                    first_elem_id = cid
+                    break
+                }
+            }
+            if first_elem_id != nid { return false }
+        } else if p.name == "last-child" {
+            if node.parent == -1 { return false }
+            let parent_node = doc.nodes[string(node.parent)]
+            let last_elem_id = -1
+            let k = parent_node.children.len() - 1
+            while k >= 0 {
+                let cid = parent_node.children[k]
+                if doc.nodes[string(cid)].type == "element" {
+                    last_elem_id = cid
+                    break
+                }
+                k = k - 1
+            }
+            if last_elem_id != nid { return false }
+        } else if p.name == "nth-child" {
+            if node.parent == -1 { return false }
+            let parent_node = doc.nodes[string(node.parent)]
+            let elem_idx = 1
+            let my_idx = -1
+            for cid in parent_node.children {
+                if doc.nodes[string(cid)].type == "element" {
+                    if cid == nid {
+                        my_idx = elem_idx
+                        break
+                    }
+                    elem_idx = elem_idx + 1
+                }
+            }
+            if my_idx == -1 { return false }
+
+            if p.arg == "odd" {
+                if my_idx % 2 == 0 { return false }
+            } else if p.arg == "even" {
+                if my_idx % 2 != 0 { return false }
+            } else {
+                let target = int(p.arg)
+                if my_idx != target { return false }
+            }
+        } else if p.name == "not" {
+            let inner_unit = parse_unit(p.arg)
+            if matches_unit(doc, nid, inner_unit) { return false }
+        }
+    }
+
+    return true
+}
+
+fn matches_selector(doc, nid, selector) {
+    let groups = split_selector_groups(selector)
+    for g in groups {
+        let steps = tokenize_group(g)
+        if steps.len() == 1 {
+            if matches_unit(doc, nid, steps[0].unit) { return true }
+        } else {
+            let all_matches = query_selector_all(doc, g, null)
+            for mid in all_matches {
+                if mid == nid { return true }
+            }
+        }
+    }
+    return false
+}
+
+fn query_selector_group(doc, steps, context_nid) {
+    if steps.len() == 0 { return [] }
+
+    let current = []
+    let step0 = steps[0]
+
+    if context_nid != null {
+        if step0.combinator == ">" {
+            let p = doc.nodes[string(context_nid)]
+            for cid in p.children {
+                if doc.nodes[string(cid)].type == "element" and matches_unit(doc, cid, step0.unit) {
+                    current.push(cid)
+                }
+            }
+        } else {
+            let desc = get_all_element_descendants(doc, context_nid)
+            for cid in desc {
+                if matches_unit(doc, cid, step0.unit) {
+                    current.push(cid)
+                }
+            }
+        }
+    } else {
+        let all_elems = get_all_doc_elements(doc)
+        for nid in all_elems {
+            if matches_unit(doc, nid, step0.unit) {
+                current.push(nid)
+            }
+        }
+    }
+
+    let step_idx = 1
+    while step_idx < steps.len() {
+        let step = steps[step_idx]
+        let next_candidates = []
+        let seen = {}
+
+        for cand_id in current {
+            if step.combinator == ">" {
+                let parent_node = doc.nodes[string(cand_id)]
+                for cid in parent_node.children {
+                    if doc.nodes[string(cid)].type == "element" and matches_unit(doc, cid, step.unit) {
+                        let k = string(cid)
+                        if not seen.has(k) {
+                            seen[k] = true
+                            next_candidates.push(cid)
+                        }
+                    }
+                }
+            } else {
+                let desc = get_all_element_descendants(doc, cand_id)
+                for cid in desc {
+                    if matches_unit(doc, cid, step.unit) {
+                        let k = string(cid)
+                        if not seen.has(k) {
+                            seen[k] = true
+                            next_candidates.push(cid)
+                        }
+                    }
+                }
+            }
+        }
+        current = next_candidates
+        step_idx = step_idx + 1
+    }
+
+    return current
+}
+
+fn query_selector_all(doc, selector, context_nid) {
+    let groups = split_selector_groups(selector)
+    let seen = {}
+    let all_matches = []
+
+    for g in groups {
+        let steps = tokenize_group(g)
+        let matches = query_selector_group(doc, steps, context_nid)
+        for nid in matches {
+            let k = string(nid)
+            if not seen.has(k) {
+                seen[k] = true
+                all_matches.push(nid)
+            }
+        }
+    }
+    return all_matches
+}
+
+fn query_selector(doc, selector, context_nid) {
+    let matches = query_selector_all(doc, selector, context_nid)
+    if matches.len() > 0 { return matches[0] }
+    return null
+}
+
+# ------------------------------------------------------------
+# Section 5: Schema Extraction, Metadata, & JSON-LD
+# ------------------------------------------------------------
+
+fn extract_field(doc, context_nid, rule) {
+    if typeof(rule) == "string" {
+        let nid = query_selector(doc, rule, context_nid)
+        if nid == null { return "" }
+        return node_text(doc, nid)
+    }
+
+    if typeof(rule) != "map" {
+        return null
+    }
+
+    let selector = ""
+    if rule.has("selector") { selector = rule.selector }
+    let attr = "text"
+    if rule.has("attribute") { attr = rule.attribute }
+    let is_multiple = false
+    if rule.has("multiple") { is_multiple = rule.multiple }
+
+    if is_multiple {
+        let matches = []
+        if selector.len() > 0 {
+            matches = query_selector_all(doc, selector, context_nid)
+        } else if context_nid != null {
+            matches = [context_nid]
+        }
+
+        let res_list = []
+        for nid in matches {
+            if rule.has("fields") {
+                let item_map = {}
+                for k in rule.fields.keys() {
+                    item_map[k] = extract_field(doc, nid, rule.fields[k])
+                }
+                res_list.push(item_map)
+            } else {
+                if attr == "text" {
+                    res_list.push(node_text(doc, nid))
+                } else if attr == "html" {
+                    res_list.push(node_html(doc, nid))
+                } else if attr == "inner_html" {
+                    res_list.push(node_inner_html(doc, nid))
+                } else {
+                    res_list.push(node_attr(doc, nid, attr))
+                }
+            }
+        }
+        return res_list
+    }
+
+    let nid = context_nid
+    if selector.len() > 0 {
+        nid = query_selector(doc, selector, context_nid)
+    }
+    if nid == null { return null }
+
+    if rule.has("fields") {
+        let item_map = {}
+        for k in rule.fields.keys() {
+            item_map[k] = extract_field(doc, nid, rule.fields[k])
+        }
+        return item_map
+    }
+
+    if attr == "text" {
+        return node_text(doc, nid)
+    } else if attr == "html" {
+        return node_html(doc, nid)
+    } else if attr == "inner_html" {
+        return node_inner_html(doc, nid)
+    }
+    return node_attr(doc, nid, attr)
+}
+
+fn extract(doc_or_html, schema) {
+    let doc = doc_or_html
+    if typeof(doc_or_html) == "string" {
+        doc = parse_html(doc_or_html)
+    }
+    let result = {}
+    for key in schema.keys() {
+        result[key] = extract_field(doc, null, schema[key])
+    }
+    return result
+}
+
+fn extract_metadata(doc_or_html) {
+    let doc = doc_or_html
+    if typeof(doc_or_html) == "string" {
+        doc = parse_html(doc_or_html)
+    }
+
+    let meta = {
+        title: "",
+        description: "",
+        keywords: "",
+        canonical: "",
+        language: "",
+        author: "",
+        og: {},
+        twitter: {}
+    }
+
+    let total = doc.next_id
+    let i = 0
+    while i < total {
+        let node = doc.nodes[string(i)]
+        if node != null and node.type == "element" {
+            let t = node.tag
+            if t == "html" {
+                if node.attributes.has("lang") {
+                    meta.language = node.attributes["lang"]
+                }
+            } else if t == "title" {
+                meta.title = node_text(doc, i).trim()
+            } else if t == "link" {
+                if node.attributes.has("rel") and node.attributes["rel"] == "canonical" {
+                    if node.attributes.has("href") {
+                        meta.canonical = node.attributes["href"]
+                    }
+                }
+            } else if t == "meta" {
+                let content = ""
+                if node.attributes.has("content") {
+                    content = node.attributes["content"]
+                }
+
+                if node.attributes.has("property") {
+                    let prop = node.attributes["property"].lower()
+                    if prop.starts_with("og:") {
+                        let k = prop.slice(3, prop.len())
+                        meta.og[k] = content
+                    }
+                }
+
+                if node.attributes.has("name") {
+                    let name = node.attributes["name"].lower()
+                    if name == "description" {
+                        meta.description = content
+                    } else if name == "keywords" {
+                        meta.keywords = content
+                    } else if name == "author" {
+                        meta.author = content
+                    } else if name.starts_with("twitter:") {
+                        let k = name.slice(8, name.len())
+                        meta.twitter[k] = content
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    if meta.title == "" and meta.og.has("title") {
+        meta.title = meta.og["title"]
+    }
+    if meta.description == "" and meta.og.has("description") {
+        meta.description = meta.og["description"]
+    }
+
+    return meta
+}
+
+fn extract_json_ld(doc_or_html) {
+    let doc = doc_or_html
+    if typeof(doc_or_html) == "string" {
+        doc = parse_html(doc_or_html)
+    }
+
+    let items = []
+    let total = doc.next_id
+    let i = 0
+    while i < total {
+        let node = doc.nodes[string(i)]
+        if node != null {
+            if node.type == "element" {
+                if node.tag == "script" {
+                    if node.attributes.has("type") {
+                        if node.attributes["type"].lower() == "application/ld+json" {
+                            let raw_content = ""
+                            for cid in node.children {
+                                let c = doc.nodes[string(cid)]
+                                if c != null {
+                                    if c.type == "text" {
+                                        raw_content = raw_content + c.text
+                                    }
+                                }
+                            }
+                            let s = raw_content.trim()
+                            if (s.starts_with("{") and s.ends_with("}")) or (s.starts_with("[") and s.ends_with("]")) {
+                                let parsed = json.parse(s)
+                                if typeof(parsed) == "array" {
+                                    for p in parsed { items.push(p) }
+                                } else if typeof(parsed) == "map" {
+                                    items.push(parsed)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return items
+}
+
+fn extract_tables(doc_or_html) {
+    let doc = doc_or_html
+    if typeof(doc_or_html) == "string" {
+        doc = parse_html(doc_or_html)
+    }
+
+    let tables = []
+    let table_ids = query_selector_all(doc, "table", null)
+    let idx = 0
+
+    for tid in table_ids {
+        let headers = []
+        let th_ids = query_selector_all(doc, "th", tid)
+        for thid in th_ids {
+            headers.push(node_text(doc, thid).trim())
+        }
+
+        let rows = []
+        let tr_ids = query_selector_all(doc, "tr", tid)
+        for trid in tr_ids {
+            let cells = []
+            let td_ids = query_selector_all(doc, "td", trid)
+            if td_ids.len() > 0 {
+                for tdid in td_ids {
+                    cells.push(node_text(doc, tdid).trim())
+                }
+                rows.push(cells)
+            }
+        }
+
+        tables.push({
+            index: idx,
+            headers: headers,
+            rows: rows
+        })
+        idx = idx + 1
+    }
+    return tables
+}
+
+# ------------------------------------------------------------
+# Section 6: Robots.txt & Sitemap Parsers
+# ------------------------------------------------------------
+
+fn parse_robots_txt(content, target_ua) {
+    let lines = content.split("\n")
+    let current_uas = []
+    let rules = []
+    let sitemaps = []
+
+    for raw_line in lines {
+        let line = raw_line.trim()
+        if line.starts_with("#") or line.len() == 0 {
+            continue
+        }
+
+        let colon = index(line, ":")
+        if colon == -1 { continue }
+
+        let field = line.slice(0, colon).trim().lower()
+        let val = line.slice(colon + 1, line.len()).trim()
+
+        if field == "user-agent" {
+            current_uas.push(val.lower())
+        } else if field == "disallow" {
+            for ua in current_uas {
+                rules.push({ ua: ua, type: "disallow", path: val })
+            }
+        } else if field == "allow" {
+            for ua in current_uas {
+                rules.push({ ua: ua, type: "allow", path: val })
+            }
+        } else if field == "sitemap" {
+            sitemaps.push(val)
+        }
+    }
+
+    return { rules: rules, sitemaps: sitemaps }
+}
+
+fn is_robots_allowed(robots, path, target_ua) {
+    if robots == null { return true }
+    let lower_ua = target_ua.lower()
+
+    let has_specific = false
+    for r in robots.rules {
+        if r.ua == lower_ua {
+            has_specific = true
+            break
+        }
+    }
+
+    let active_rules = []
+    for r in robots.rules {
+        if has_specific and r.ua == lower_ua {
+            active_rules.push(r)
+        } else if not has_specific and r.ua == "*" {
+            active_rules.push(r)
+        }
+    }
+
+    let best_match_len = -1
+    let best_match_type = "allow"
+
+    for r in active_rules {
+        if r.path == "" { continue }
+        if path.starts_with(r.path) {
+            let plen = r.path.len()
+            if plen > best_match_len {
+                best_match_len = plen
+                best_match_type = r.type
+            } else if plen == best_match_len and r.type == "allow" {
+                best_match_type = "allow"
+            }
+        }
+    }
+
+    if best_match_type == "disallow" {
+        return false
+    }
+    return true
+}
+
+fn parse_sitemap(xml_content) {
+    let doc = parse_html(xml_content)
+    let locs = query_selector_all(doc, "loc", null)
+    let urls = []
+    for lid in locs {
+        let txt = node_text(doc, lid).trim()
+        if txt.len() > 0 {
+            urls.push(txt)
+        }
+    }
+    return urls
+}
+
+# ------------------------------------------------------------
+# Section 7: Asset Classifiers & Categorized Extraction
 # ------------------------------------------------------------
 
 fn is_image_ext(ext) {
     let list = ["PNG", "JPG", "JPEG", "GIF", "WEBP", "SVG", "ICO", "BMP", "AVIF", "TIFF"]
     for e in list {
-        if ext == e {
-            return true
-        }
+        if ext == e { return true }
     }
     return false
 }
@@ -372,88 +1494,83 @@ fn is_image_ext(ext) {
 fn is_video_ext(ext) {
     let list = ["MP4", "WEBM", "OGV", "MOV", "M4V", "AVI", "MKV", "FLV", "WMV", "MP3", "WAV", "OGG", "FLAC", "AAC", "M4A"]
     for e in list {
-        if ext == e {
-            return true
-        }
+        if ext == e { return true }
     }
     return false
 }
 
 fn is_document_file_ext(ext) {
-    let list = ["PDF", "ZIP", "TAR", "GZ", "RAR", "7Z", "DOC", "DOCX", "XLS", "XLSX", "PPT", "PPTX", "CSV", "TSV", "TXT", "RTF", "EPUB", "ISO", "JSON", "XML"]
+    let list = ["PDF", "ZIP", "TAR", "GZ", "RAR", "7Z", "DOC", "DOCX", "XLS", "XLSX",
+                "PPT", "PPTX", "ODT", "ODS", "ODP", "TXT", "RTF", "CSV", "JSON", "XML", "EPUB"]
     for e in list {
-        if ext == e {
-            return true
-        }
+        if ext == e { return true }
     }
     return false
 }
 
-# ------------------------------------------------------------
-# Category Extraction
-# ------------------------------------------------------------
+fn extract_page_data(arg1, arg2) {
+    let current_url = ""
+    let html = ""
 
-fn extract_page_data(current_url, html) {
-    let page_title = ""
-    let title_tags = find_paired_elements(html, "title")
-    if title_tags.len() > 0 {
-        page_title = title_tags[0].inner
+    if arg1.starts_with("http://") or arg1.starts_with("https://") {
+        current_url = arg1
+        html = arg2
+    } else {
+        html = arg1
+        current_url = arg2
     }
 
-    let meta_desc = ""
-    let meta_keywords = ""
-    let meta_author = ""
-    let og_title = ""
-    let og_image = ""
-    let og_desc = ""
-    let meta_tags = find_all_tags(html, "meta")
+    let doc = parse_html(html)
+    let meta = extract_metadata(doc)
+    let json_ld = extract_json_ld(doc)
+    let tables = extract_tables(doc)
 
-    for m in meta_tags {
-        let name = get_attr(m, "name").lower()
-        let prop = get_attr(m, "property").lower()
-        let content = sanitize_text(get_attr(m, "content"))
-
-        if name == "description" {
-            meta_desc = content
-        } else if name == "keywords" {
-            meta_keywords = content
-        } else if name == "author" {
-            meta_author = content
-        }
-
-        if prop == "og:title" {
-            og_title = content
-        } else if prop == "og:image" {
-            og_image = content
-        } else if prop == "og:description" {
-            og_desc = content
-        }
+    # Headings
+    let h1_nodes = query_selector_all(doc, "h1", null)
+    let h1_list = []
+    for hid in h1_nodes {
+        h1_list.push({ tag: "h1", inner: node_text(doc, hid).trim() })
     }
 
-    let h1_list = find_paired_elements(html, "h1")
-    let h2_list = find_paired_elements(html, "h2")
-    let h3_list = find_paired_elements(html, "h3")
-    let p_list = find_paired_elements(html, "p")
+    let h2_nodes = query_selector_all(doc, "h2", null)
+    let h2_list = []
+    for hid in h2_nodes {
+        h2_list.push({ tag: "h2", inner: node_text(doc, hid).trim() })
+    }
+
+    let h3_nodes = query_selector_all(doc, "h3", null)
+    let h3_list = []
+    for hid in h3_nodes {
+        h3_list.push({ tag: "h3", inner: node_text(doc, hid).trim() })
+    }
+
+    # Paragraphs
+    let p_nodes = query_selector_all(doc, "p", null)
+    let p_list = []
+    for pid in p_nodes {
+        let t = node_text(doc, pid).trim()
+        if t.len() > 0 {
+            p_list.push({ tag: "p", inner: t })
+        }
+    }
 
     # Images
     let img_items = []
     let seen_imgs = {}
-    let img_tags = find_all_tags(html, "img")
+    let img_nodes = query_selector_all(doc, "img", null)
 
-    for tag in img_tags {
-        let src = get_attr(tag, "src")
+    for iid in img_nodes {
+        let src = node_attr(doc, iid, "src")
         if src.len() > 0 {
             let abs_src = resolve_url(current_url, src)
             if abs_src != null {
-                if seen_imgs.has(abs_src) == false {
+                if not seen_imgs.has(abs_src) {
                     seen_imgs[abs_src] = true
-                    let alt = sanitize_text(get_attr(tag, "alt"))
-                    let w = get_attr(tag, "width")
-                    let h = get_attr(tag, "height")
+                    let alt = node_attr(doc, iid, "alt")
+                    let w = node_attr(doc, iid, "width")
+                    let h = node_attr(doc, iid, "height")
                     let ext = get_file_extension(abs_src)
-                    if ext.len() == 0 {
-                        ext = "IMG"
-                    }
+                    if ext.len() == 0 { ext = "IMG" }
 
                     let dim = ""
                     if w.len() > 0 and h.len() > 0 {
@@ -477,58 +1594,50 @@ fn extract_page_data(current_url, html) {
     let video_items = []
     let seen_videos = {}
 
-    let video_tags = find_all_tags(html, "video")
-    for v in video_tags {
-        let src = get_attr(v, "src")
+    let video_nodes = query_selector_all(doc, "video", null)
+    for vid in video_nodes {
+        let src = node_attr(doc, vid, "src")
         if src.len() > 0 {
             let abs_src = resolve_url(current_url, src)
-            if abs_src != null {
-                if seen_videos.has(abs_src) == false {
-                    seen_videos[abs_src] = true
-                    video_items.push({
-                        type: "VIDEO TAG",
-                        url: abs_src,
-                        format: get_file_extension(abs_src)
-                    })
-                }
+            if abs_src != null and not seen_videos.has(abs_src) {
+                seen_videos[abs_src] = true
+                video_items.push({
+                    type: "VIDEO TAG",
+                    url: abs_src,
+                    format: get_file_extension(abs_src)
+                })
             }
         }
     }
 
-    let source_tags = find_all_tags(html, "source")
-    for s in source_tags {
-        let src = get_attr(s, "src")
-        let mime = get_attr(s, "type")
+    let source_nodes = query_selector_all(doc, "source", null)
+    for sid in source_nodes {
+        let src = node_attr(doc, sid, "src")
+        let mime = node_attr(doc, sid, "type")
         if src.len() > 0 {
             let abs_src = resolve_url(current_url, src)
-            if abs_src != null {
-                if seen_videos.has(abs_src) == false {
-                    seen_videos[abs_src] = true
-                    let vtype = "SOURCE"
-                    if mime.len() > 0 {
-                        vtype = mime
-                    }
-                    video_items.push({
-                        type: vtype,
-                        url: abs_src,
-                        format: get_file_extension(abs_src)
-                    })
-                }
+            if abs_src != null and not seen_videos.has(abs_src) {
+                seen_videos[abs_src] = true
+                let vtype = "SOURCE"
+                if mime.len() > 0 { vtype = mime }
+                video_items.push({
+                    type: vtype,
+                    url: abs_src,
+                    format: get_file_extension(abs_src)
+                })
             }
         }
     }
 
-    let iframe_tags = find_all_tags(html, "iframe")
-    for ifr in iframe_tags {
-        let src = get_attr(ifr, "src")
+    let iframe_nodes = query_selector_all(doc, "iframe", null)
+    for ifid in iframe_nodes {
+        let src = node_attr(doc, ifid, "src")
         if src.len() > 0 {
             let lower_src = src.lower()
             if lower_src.contains("youtube") or lower_src.contains("youtu.be") or lower_src.contains("vimeo") or lower_src.contains("player") or lower_src.contains("embed") {
                 let abs_src = resolve_url(current_url, src)
-                if abs_src == null {
-                    abs_src = src
-                }
-                if seen_videos.has(abs_src) == false {
+                if abs_src == null { abs_src = src }
+                if not seen_videos.has(abs_src) {
                     seen_videos[abs_src] = true
                     video_items.push({
                         type: "VIDEO EMBED",
@@ -547,19 +1656,19 @@ fn extract_page_data(current_url, html) {
     let crawlable_links = []
     let seen_links = {}
 
-    let a_elements = find_paired_elements(html, "a")
-    for a in a_elements {
-        let href = get_attr(a.tag, "href")
-        let label = sanitize_text(a.inner)
+    let a_nodes = query_selector_all(doc, "a[href]", null)
+    for aid in a_nodes {
+        let href = node_attr(doc, aid, "href")
+        let label = node_text(doc, aid).trim()
         if href.len() > 0 {
             let resolved = resolve_url(current_url, href)
             if resolved != null {
-                if seen_links.has(resolved) == false {
+                if not seen_links.has(resolved) {
                     seen_links[resolved] = true
                     let ext = get_file_extension(resolved)
 
                     if is_video_ext(ext) {
-                        if seen_videos.has(resolved) == false {
+                        if not seen_videos.has(resolved) {
                             seen_videos[resolved] = true
                             video_items.push({
                                 type: "MEDIA LINK (" + ext + ")",
@@ -591,66 +1700,55 @@ fn extract_page_data(current_url, html) {
         }
     }
 
-    # Resources (more data)
+    # Resources
     let resource_items = []
-    let link_tags = find_all_tags(html, "link")
-    for lt in link_tags {
-        let rel = get_attr(lt, "rel").lower()
-        let href = get_attr(lt, "href")
+    let link_nodes = query_selector_all(doc, "link", null)
+    for lkid in link_nodes {
+        let rel = node_attr(doc, lkid, "rel").lower()
+        let href = node_attr(doc, lkid, "href")
         if href.len() > 0 {
             let abs_href = resolve_url(current_url, href)
             if abs_href != null {
                 if rel.contains("stylesheet") {
-                    resource_items.push({
-                        kind: "CSS STYLESHEET",
-                        url: abs_href
-                    })
+                    resource_items.push({ kind: "CSS STYLESHEET", url: abs_href })
                 } else if rel.contains("icon") {
-                    resource_items.push({
-                        kind: "FAVICON",
-                        url: abs_href
-                    })
+                    resource_items.push({ kind: "FAVICON", url: abs_href })
                 } else if rel.contains("canonical") {
-                    resource_items.push({
-                        kind: "CANONICAL",
-                        url: abs_href
-                    })
+                    resource_items.push({ kind: "CANONICAL", url: abs_href })
                 }
             }
         }
     }
 
-    let script_tags = find_all_tags(html, "script")
-    for st in script_tags {
-        let src = get_attr(st, "src")
+    let script_nodes = query_selector_all(doc, "script[src]", null)
+    for scid in script_nodes {
+        let src = node_attr(doc, scid, "src")
         if src.len() > 0 {
             let abs_src = resolve_url(current_url, src)
             if abs_src != null {
-                resource_items.push({
-                    kind: "JAVASCRIPT",
-                    url: abs_src
-                })
+                resource_items.push({ kind: "JAVASCRIPT", url: abs_src })
             }
         }
     }
 
     return {
         url: current_url,
+        doc: doc,
         txt: {
-            title: page_title,
-            meta_description: meta_desc,
-            meta_keywords: meta_keywords,
-            meta_author: meta_author,
-            open_graph: {
-                title: og_title,
-                image: og_image,
-                description: og_desc
-            },
+            title: meta.title,
+            meta_description: meta.description,
+            meta_keywords: meta.keywords,
+            meta_author: meta.author,
+            open_graph: meta.og,
+            twitter: meta.twitter,
             h1: h1_list,
             h2: h2_list,
             h3: h3_list,
             paragraphs: p_list
         },
+        metadata: meta,
+        json_ld: json_ld,
+        tables: tables,
         img: img_items,
         video: video_items,
         files: file_items,
@@ -664,61 +1762,478 @@ fn extract_page_data(current_url, html) {
 }
 
 # ------------------------------------------------------------
-# Scrape & Crawl High-Level Functions
+# Section 8: Categorized Table Formatting & Data Export
 # ------------------------------------------------------------
 
-fn scrape(target_url) {
-    let req_url = target_url
-    if req_url.starts_with("https://") {
-        req_url = "http://" + req_url.slice(8, req_url.len())
+fn pad_right(s, width) {
+    let str_val = string(s)
+    let pad_len = width - str_val.len()
+    if pad_len <= 0 {
+        if str_val.len() > width and width > 3 {
+            return str_val.slice(0, width - 3) + "..."
+        }
+        return str_val
     }
-
-    let res = http.get(req_url)
-    if res == null {
-        return null
+    let res = str_val
+    let i = 0
+    while i < pad_len {
+        res = res + " "
+        i = i + 1
     }
+    return res
+}
 
-    if res.status == 301 or res.status == 302 {
-        let loc = res.headers["location"]
-        if loc != null {
-            if loc.starts_with("http://") {
-                res = http.get(loc)
+fn draw_divider(widths) {
+    let parts = ["+"]
+    for w in widths {
+        let seg = ""
+        let i = 0
+        while i < w + 2 {
+            seg = seg + "-"
+            i = i + 1
+        }
+        parts.push(seg)
+        parts.push("+")
+    }
+    return join(parts, "")
+}
+
+fn draw_row(cols, widths) {
+    let parts = ["|"]
+    let idx = 0
+    for w in widths {
+        let val = ""
+        if idx < cols.len() {
+            val = string(cols[idx])
+        }
+        parts.push(" " + pad_right(val, w) + " |")
+        idx = idx + 1
+    }
+    return join(parts, "")
+}
+
+fn print_category_header(cat_name, count) {
+    echo("")
+    echo("================================================================================")
+    echo(" [CATUGURY] " + cat_name + " (Total: " + string(count) + ")")
+    echo("================================================================================")
+}
+
+fn print_page_tables(page_data) {
+    # Table 1: Metadata
+    print_category_header("PAGE TEXT & METADATA (txt)", 6)
+    let meta_w = [22, 54]
+    echo(draw_divider(meta_w))
+    echo(draw_row(["Field", "Value"], meta_w))
+    echo(draw_divider(meta_w))
+    echo(draw_row(["Title", page_data.txt.title], meta_w))
+    echo(draw_row(["Description", page_data.txt.meta_description], meta_w))
+    echo(draw_row(["Keywords", page_data.txt.meta_keywords], meta_w))
+    echo(draw_row(["Author", page_data.txt.meta_author], meta_w))
+    if page_data.txt.open_graph.has("title") {
+        echo(draw_row(["OpenGraph Title", page_data.txt.open_graph.title], meta_w))
+    }
+    if page_data.txt.open_graph.has("image") {
+        echo(draw_row(["OpenGraph Image", page_data.txt.open_graph.image], meta_w))
+    }
+    echo(draw_divider(meta_w))
+
+    # Table 2: Headings
+    let total_headings = page_data.txt.h1.len() + page_data.txt.h2.len() + page_data.txt.h3.len()
+    print_category_header("HEADINGS HIERARCHY (txt)", total_headings)
+    let head_w = [6, 8, 62]
+    echo(draw_divider(head_w))
+    echo(draw_row(["#", "Tag", "Heading Content"], head_w))
+    echo(draw_divider(head_w))
+    let h_idx = 1
+    for h in page_data.txt.h1 {
+        echo(draw_row([string(h_idx), "H1", h.inner], head_w))
+        h_idx = h_idx + 1
+    }
+    for h in page_data.txt.h2 {
+        echo(draw_row([string(h_idx), "H2", h.inner], head_w))
+        h_idx = h_idx + 1
+    }
+    for h in page_data.txt.h3 {
+        echo(draw_row([string(h_idx), "H3", h.inner], head_w))
+        h_idx = h_idx + 1
+    }
+    if total_headings == 0 {
+        echo(draw_row(["-", "NONE", "(No headings found on this page)"], head_w))
+    }
+    echo(draw_divider(head_w))
+
+    # Table 3: Paragraphs
+    print_category_header("TEXT PARAGRAPHS (txt)", page_data.txt.paragraphs.len())
+    let p_w = [6, 72]
+    echo(draw_divider(p_w))
+    echo(draw_row(["#", "Paragraph Text Snippet"], p_w))
+    echo(draw_divider(p_w))
+    let p_idx = 1
+    for p in page_data.txt.paragraphs {
+        echo(draw_row([string(p_idx), p.inner], p_w))
+        p_idx = p_idx + 1
+    }
+    if page_data.txt.paragraphs.len() == 0 {
+        echo(draw_row(["-", "(No paragraphs found)"], p_w))
+    }
+    echo(draw_divider(p_w))
+
+    # Table 4: Images (img)
+    print_category_header("IMAGES CATALOG (img)", page_data.img.len())
+    let img_w = [4, 8, 8, 22, 32]
+    echo(draw_divider(img_w))
+    echo(draw_row(["#", "Format", "Dims", "Alt Text", "Image URL"], img_w))
+    echo(draw_divider(img_w))
+    let im_idx = 1
+    for img in page_data.img {
+        echo(draw_row([string(im_idx), img.format, img.dimensions, img.alt, img.url], img_w))
+        im_idx = im_idx + 1
+    }
+    if page_data.img.len() == 0 {
+        echo(draw_row(["-", "NONE", "-", "(No images found)", "-"], img_w))
+    }
+    echo(draw_divider(img_w))
+
+    # Table 5: Videos & Multimedia (video)
+    print_category_header("VIDEOS & MULTIMEDIA (video)", page_data.video.len())
+    let vid_w = [4, 22, 50]
+    echo(draw_divider(vid_w))
+    echo(draw_row(["#", "Media Type", "Media Source / Stream URL"], vid_w))
+    echo(draw_divider(vid_w))
+    let v_idx = 1
+    for v in page_data.video {
+        echo(draw_row([string(v_idx), v.type, v.url], vid_w))
+        v_idx = v_idx + 1
+    }
+    if page_data.video.len() == 0 {
+        echo(draw_row(["-", "NONE", "(No video or multimedia streams detected)"], vid_w))
+    }
+    echo(draw_divider(vid_w))
+
+    # Table 6: Downloadable Files (files)
+    print_category_header("DOWNLOADABLE FILES & ARCHIVES (files)", page_data.files.len())
+    let f_w = [4, 8, 28, 36]
+    echo(draw_divider(f_w))
+    echo(draw_row(["#", "Format", "Link Text", "File URL"], f_w))
+    echo(draw_divider(f_w))
+    let f_idx = 1
+    for f in page_data.files {
+        echo(draw_row([string(f_idx), f.format, f.label, f.url], f_w))
+        f_idx = f_idx + 1
+    }
+    if page_data.files.len() == 0 {
+        echo(draw_row(["-", "NONE", "(No downloadable files found)", "-"], f_w))
+    }
+    echo(draw_divider(f_w))
+
+    # Table 7: Internal Links
+    print_category_header("INTERNAL NAVIGATIONAL LINKS (links)", page_data.links.internal.len())
+    let in_w = [4, 28, 44]
+    echo(draw_divider(in_w))
+    echo(draw_row(["#", "Anchor Label", "Destination URL"], in_w))
+    echo(draw_divider(in_w))
+    let in_idx = 1
+    for lk in page_data.links.internal {
+        echo(draw_row([string(in_idx), lk.label, lk.url], in_w))
+        in_idx = in_idx + 1
+    }
+    if page_data.links.internal.len() == 0 {
+        echo(draw_row(["-", "(None)", "(No internal links)"], in_w))
+    }
+    echo(draw_divider(in_w))
+
+    # Table 8: External Links
+    print_category_header("EXTERNAL OUTBOUND LINKS (links)", page_data.links.external.len())
+    let ex_w = [4, 28, 44]
+    echo(draw_divider(ex_w))
+    echo(draw_row(["#", "Anchor Label", "External Destination"], ex_w))
+    echo(draw_divider(ex_w))
+    let ex_idx = 1
+    for lk in page_data.links.external {
+        echo(draw_row([string(ex_idx), lk.label, lk.url], ex_w))
+        ex_idx = ex_idx + 1
+    }
+    if page_data.links.external.len() == 0 {
+        echo(draw_row(["-", "(None)", "(No external links)"], ex_w))
+    }
+    echo(draw_divider(ex_w))
+
+    # Table 9: HTML Tables
+    if page_data.tables.len() > 0 {
+        print_category_header("EXTRACTED HTML DATA TABLES (tables)", page_data.tables.len())
+        for tbl in page_data.tables {
+            echo("--- Table #" + string(tbl.index + 1) + " ---")
+            if tbl.headers.len() > 0 {
+                echo("Headers: " + join(tbl.headers, " | "))
+            }
+            for row in tbl.rows {
+                echo("  Row: " + join(row, " | "))
             }
         }
     }
+}
 
+fn print_tables(page_data) {
+    print_page_tables(page_data)
+}
+
+fn escape_csv_val(val) {
+    let s = string(val)
+    let needs_quotes = false
+    if s.contains(",") or s.contains("\"") or s.contains("\n") or s.contains("\r") {
+        needs_quotes = true
+    }
+    s = s.replace("\"", "\"\"")
+    if needs_quotes {
+        return "\"" + s + "\""
+    }
+    return s
+}
+
+fn export_json(data, file_path) {
+    let content = json.stringify(data, 2)
+    fs.write(file_path, content + "\n")
+    return true
+}
+
+fn export_jsonl(records, file_path) {
+    let lines = []
+    for r in records {
+        lines.push(json.stringify(r))
+    }
+    fs.write(file_path, join(lines, "\n") + "\n")
+    return true
+}
+
+fn export_csv(headers, rows, file_path) {
+    let lines = []
+    let h_row = []
+    for h in headers {
+        h_row.push(escape_csv_val(h))
+    }
+    lines.push(join(h_row, ","))
+
+    for r in rows {
+        let r_row = []
+        for h in headers {
+            let val = ""
+            if r.has(h) {
+                val = r[h]
+            }
+            r_row.push(escape_csv_val(val))
+        }
+        lines.push(join(r_row, ","))
+    }
+    fs.write(file_path, join(lines, "\n") + "\n")
+    return true
+}
+
+# ------------------------------------------------------------
+# Section 9: Advanced Scraping & BFS Crawling Engine
+# ------------------------------------------------------------
+
+fn fetch_with_redirects(target_url, headers, max_redirects, allow_private_ips) {
+    let cur_url = target_url
+    let redirects = 0
+    let visited_urls = {}
+
+    while redirects <= max_redirects {
+        let sec = validate_target_url(cur_url, allow_private_ips)
+        if not sec.valid {
+            return {
+                url: cur_url,
+                status: 0,
+                error: sec.reason,
+                headers: {},
+                body: "",
+                redirects: redirects
+            }
+        }
+
+        visited_urls[cur_url] = true
+
+        let resp = http.request({
+            method: "GET",
+            url: cur_url,
+            headers: headers
+        })
+
+        if resp.status == 301 or resp.status == 302 or resp.status == 303 or resp.status == 307 or resp.status == 308 {
+            let loc = ""
+            if resp.headers.has("Location") {
+                loc = resp.headers["Location"]
+            } else if resp.headers.has("location") {
+                loc = resp.headers["location"]
+            }
+
+            if loc.len() > 0 {
+                let next_url = resolve_url(cur_url, loc)
+                if next_url == null or visited_urls.has(next_url) {
+                    return {
+                        url: cur_url,
+                        status: resp.status,
+                        error: "Redirect loop or invalid location: " + loc,
+                        headers: resp.headers,
+                        body: "",
+                        redirects: redirects
+                    }
+                }
+                cur_url = next_url
+                redirects = redirects + 1
+                continue
+            }
+        }
+
+        return {
+            url: cur_url,
+            status: resp.status,
+            error: "",
+            headers: resp.headers,
+            body: resp.body,
+            redirects: redirects
+        }
+    }
+
+    return {
+        url: cur_url,
+        status: 0,
+        error: "Exceeded max redirects (" + string(max_redirects) + ")",
+        headers: {},
+        body: "",
+        redirects: redirects
+    }
+}
+
+fn scrape_with_options(target_url, options) {
+    let opts = {}
+    if options != null and typeof(options) == "map" {
+        opts = options
+    }
+
+    let allow_private_ips = true
+    if opts.has("allow_private_ips") {
+        allow_private_ips = opts.allow_private_ips
+    }
+
+    let headers = { "User-Agent": "MozhiCrawler/1.1" }
+    if opts.has("headers") {
+        for k in opts.headers.keys() {
+            headers[k] = opts.headers[k]
+        }
+    }
+
+    let max_redirects = 5
+    if opts.has("max_redirects") {
+        max_redirects = opts.max_redirects
+    }
+
+    let res = fetch_with_redirects(target_url, headers, max_redirects, allow_private_ips)
     if res.status >= 200 and res.status < 300 {
-        return extract_page_data(target_url, res.body)
+        let page_data = extract_page_data(res.url, res.body)
+        if opts.has("extract_schema") {
+            if opts.extract_schema != null {
+                page_data["schema_data"] = extract(page_data.doc, opts.extract_schema)
+            }
+        }
+        return page_data
     }
     return null
 }
 
-fn crawl(opts) {
-    let seed_url = opts.url
+fn scrape(arg) {
+    if typeof(arg) == "map" {
+        let target_url = ""
+        if arg.has("url") { target_url = arg.url }
+        return scrape_with_options(target_url, arg)
+    }
+    return scrape_with_options(arg, {})
+}
+
+fn is_domain_allowed(url, allowed_domains) {
+    if allowed_domains.len() == 0 { return true }
+    let p = parse_url(url)
+    if not p.valid { return false }
+    for d in allowed_domains {
+        if p.hostname == d or p.hostname.ends_with("." + d) {
+            return true
+        }
+    }
+    return false
+}
+
+fn is_url_allowed_by_rules(url, include_patterns, exclude_patterns) {
+    if exclude_patterns != null {
+        for pat in exclude_patterns {
+            if url.contains(pat) { return false }
+        }
+    }
+    if include_patterns != null and include_patterns.len() > 0 {
+        let matched = false
+        for pat in include_patterns {
+            if url.contains(pat) { matched = true; break }
+        }
+        if not matched { return false }
+    }
+    return true
+}
+
+fn crawl_with_options(opts) {
+    let seed_url = ""
+    if opts.has("url") { seed_url = opts.url }
+    if seed_url.len() == 0 { return null }
+
     let max_pages = 5
-    if opts.max_pages != null {
-        max_pages = opts.max_pages
-    }
+    if opts.has("max_pages") { max_pages = opts.max_pages }
     let max_depth = 2
-    if opts.max_depth != null {
-        max_depth = opts.max_depth
-    }
+    if opts.has("max_depth") { max_depth = opts.max_depth }
     let same_domain = true
-    if opts.same_domain != null {
-        same_domain = opts.same_domain
+    if opts.has("same_domain") { same_domain = opts.same_domain }
+
+    let allow_private_ips = true
+    if opts.has("allow_private_ips") { allow_private_ips = opts.allow_private_ips }
+
+    let allowed_domains = []
+    let parsed_seed = parse_url(seed_url)
+    if not parsed_seed.valid { return null }
+
+    if opts.has("allowed_domains") {
+        allowed_domains = opts.allowed_domains
+    } else if same_domain {
+        allowed_domains = [parsed_seed.hostname]
     }
 
-    let parsed_seed = parse_url(seed_url)
-    if parsed_seed.valid == false {
-        return null
+    let include_patterns = []
+    if opts.has("include_patterns") { include_patterns = opts.include_patterns }
+    let exclude_patterns = []
+    if opts.has("exclude_patterns") { exclude_patterns = opts.exclude_patterns }
+
+    let headers = { "User-Agent": "MozhiCrawler/1.1" }
+    if opts.has("headers") {
+        for k in opts.headers.keys() { headers[k] = opts.headers[k] }
+    }
+
+    # Optional robots.txt
+    let robots_rules = null
+    if opts.has("robots_txt") {
+        if opts.robots_txt == true {
+            let robots_url = parsed_seed.protocol + "://" + parsed_seed.host + "/robots.txt"
+            let rob_res = http.get(robots_url)
+            if rob_res != null {
+                if rob_res.status == 200 {
+                    robots_rules = parse_robots_txt(rob_res.body, headers["User-Agent"])
+                }
+            }
+        }
     }
 
     let queue = []
     let visited = {}
     let pages = []
 
-    queue.push({ url: parsed_seed.full, depth: 0 })
-    visited[parsed_seed.full] = true
+    let norm_seed = normalize_url(seed_url)
+    queue.push({ url: norm_seed, depth: 0 })
+    visited[norm_seed] = true
 
     let head = 0
     let count = 0
@@ -726,26 +2241,52 @@ fn crawl(opts) {
     while head < queue.len() and count < max_pages {
         let item = queue[head]
         head = head + 1
-        count = count + 1
 
-        let data = scrape(item.url)
+        let current_url = item.url
+        let current_depth = item.depth
+
+        if robots_rules != null {
+            let p = parse_url(current_url)
+            if not is_robots_allowed(robots_rules, p.path, headers["User-Agent"]) {
+                continue
+            }
+        }
+
+        count = count + 1
+        let scrape_schema = null
+        if opts.has("extract_schema") {
+            scrape_schema = opts.extract_schema
+        }
+        let data = scrape_with_options(current_url, {
+            allow_private_ips: allow_private_ips,
+            headers: headers,
+            extract_schema: scrape_schema
+        })
+
         if data != null {
             pages.push(data)
 
-            if item.depth < max_depth {
+            # Update live json if requested
+            if opts.has("export_json_path") {
+                let live_state = {
+                    seed_url: seed_url,
+                    crawled_count: pages.len(),
+                    current_url: current_url,
+                    pages: pages
+                }
+                export_json(live_state, opts.export_json_path)
+            }
+
+            if current_depth < max_depth {
                 for next_link in data.crawlable_links {
-                    let allow = true
-                    if same_domain {
-                        if same_host(next_link, seed_url) == false {
-                            allow = false
-                        }
-                    }
-                    if allow {
-                        if visited.has(next_link) == false {
-                            visited[next_link] = true
+                    let norm_link = normalize_url(next_link)
+                    if not visited.has(norm_link) {
+                        if is_domain_allowed(norm_link, allowed_domains) and
+                           is_url_allowed_by_rules(norm_link, include_patterns, exclude_patterns) {
+                            visited[norm_link] = true
                             queue.push({
-                                url: next_link,
-                                depth: item.depth + 1
+                                url: norm_link,
+                                depth: current_depth + 1
                             })
                         }
                     }
@@ -754,9 +2295,30 @@ fn crawl(opts) {
         }
     }
 
-    return {
+    let crawl_result = {
         seed_url: seed_url,
         total_pages: pages.len(),
         pages: pages
     }
+
+    if opts.has("export_json_path") {
+        export_json(crawl_result, opts.export_json_path)
+    }
+
+    return crawl_result
+}
+
+fn crawl(arg) {
+    if typeof(arg) == "map" {
+        return crawl_with_options(arg)
+    }
+    return crawl_with_options({ url: arg, max_pages: 5, max_depth: 2 })
+}
+
+fn crawl_url(seed_url, max_pages, max_depth) {
+    return crawl_with_options({
+        url: seed_url,
+        max_pages: max_pages,
+        max_depth: max_depth
+    })
 }

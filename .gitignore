@@ -3,3 +3,6 @@
 *.sqlite
 dist/
 .mozhi/
+*.csv
+*.json
+*.jsonl

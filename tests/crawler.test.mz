@@ -1,61 +1,295 @@
 # ============================================================
-# Crawler package tests — run with: mozhi test tests/
+# Crawler Package Full Test Suite — mozhi test tests/
+# 100% Native Mozhi stdlib
 # ============================================================
 
 import c from "../src/mod.mz"
 
-echo("Running crawler package tests...")
+echo("Running Crawler v1.1.0 test suite...")
 
-# 1. URL Parser tests
+# ------------------------------------------------------------
+# 1. URL Parser, Dot-Segment Normalization & Resolution
+# ------------------------------------------------------------
+echo("[1/6] Testing URL parsing and normalization...")
+
 let p1 = c.parse_url("http://example.com/path/to/page.html")
 assert_eq(p1.valid, true)
 assert_eq(p1.protocol, "http")
-assert_eq(p1.host, "example.com")
+assert_eq(p1.hostname, "example.com")
 assert_eq(p1.path, "/path/to/page.html")
 
-let p2 = c.parse_url("https://sub.domain.org:8080/test#section")
+let p2 = c.parse_url("https://sub.domain.org:8080/test?query=abc#section")
 assert_eq(p2.valid, true)
 assert_eq(p2.protocol, "https")
-assert_eq(p2.host, "sub.domain.org:8080")
+assert_eq(p2.hostname, "sub.domain.org")
+assert_eq(p2.port, "8080")
 assert_eq(p2.path, "/test")
+assert_eq(p2.query, "query=abc")
+assert_eq(p2.fragment, "section")
 
-# 2. Same host checks
+# Dot-segment path normalization
+assert_eq(c.normalize_path("/a/b/../c"), "/a/c")
+assert_eq(c.normalize_path("/a/./b/../../d"), "/d")
+assert_eq(c.normalize_path("/x/y/z/"), "/x/y/z/")
+assert_eq(c.normalize_path("item"), "item")
+
+# URL Normalization
+assert_eq(c.normalize_url("http://example.com:80/a/b/../c?key=1#anchor"), "http://example.com/a/c?key=1")
+assert_eq(c.normalize_url("https://example.com:443/"), "https://example.com/")
+
+# Same host checks
 assert(c.same_host("http://example.com/a", "http://example.com/b"))
 assert(c.same_host("http://example.com/a", "http://other.com/b") == false)
 
-# 3. Relative URL resolution
+# Relative URL resolution
 assert_eq(c.resolve_url("http://site.com/docs/", "guide.html"), "http://site.com/docs/guide.html")
 assert_eq(c.resolve_url("http://site.com/docs/index.html", "/about"), "http://site.com/about")
+assert_eq(c.resolve_url("http://site.com/a/b/c", "../d"), "http://site.com/a/d")
+assert_eq(c.resolve_url("http://site.com/docs/", "./item"), "http://site.com/docs/item")
 assert_eq(c.resolve_url("http://site.com/", "http://other.com/"), "http://other.com/")
 assert_null(c.resolve_url("http://site.com/", "javascript:void(0)"))
 assert_null(c.resolve_url("http://site.com/", "mailto:test@example.com"))
 
-# 4. File extension detection
+# ------------------------------------------------------------
+# 2. Security & SSRF Protection
+# ------------------------------------------------------------
+echo("[2/6] Testing Security and SSRF protection...")
+
+assert(c.is_private_ip("localhost"))
+assert(c.is_private_ip("127.0.0.1"))
+assert(c.is_private_ip("127.0.0.5:8080"))
+assert(c.is_private_ip("10.0.1.1"))
+assert(c.is_private_ip("172.16.0.5"))
+assert(c.is_private_ip("172.31.255.255"))
+assert(c.is_private_ip("192.168.1.100"))
+assert(c.is_private_ip("169.254.169.254"))
+assert(c.is_private_ip("::1"))
+assert(c.is_private_ip("example.com") == false)
+assert(c.is_private_ip("172.35.0.1") == false)
+
+let v_safe = c.validate_target_url("http://example.com/page", false)
+assert_eq(v_safe.valid, true)
+
+let v_ssrf = c.validate_target_url("http://127.0.0.1/admin", false)
+assert_eq(v_ssrf.valid, false)
+
+let v_allowed_private = c.validate_target_url("http://127.0.0.1:8089/", true)
+assert_eq(v_allowed_private.valid, true)
+
+# ------------------------------------------------------------
+# 3. DOM Tree & Full CSS Selector Engine
+# ------------------------------------------------------------
+echo("[3/6] Testing DOM Tree & CSS Selector Engine...")
+
+let html = "<div id='container' class='app main-view'>" +
+    "<header class='site-header'>" +
+        "<h1 class='title'>Mozhi Web</h1>" +
+        "<nav class='nav-bar'>" +
+            "<a href='/home' class='nav-link active'>Home</a>" +
+            "<a href='/about' class='nav-link'>About</a>" +
+            "<a href='https://github.com/crossberry' class='nav-link external' target='_blank'>GitHub</a>" +
+        "</nav>" +
+    "</header>" +
+    "<main class='content'>" +
+        "<article class='card featured' data-category='tech' data-id='101'>" +
+            "<h2>Featured Article</h2>" +
+            "<p class='desc'>First article text.</p>" +
+            "<span class='badge'>Hot</span>" +
+        "</article>" +
+        "<article class='card' data-category='news' data-id='102'>" +
+            "<h2>Second Article</h2>" +
+            "<p class='desc'>Second article text.</p>" +
+        "</article>" +
+        "<ul class='items-list'>" +
+            "<li>Item Alpha</li>" +
+            "<li>Item Beta</li>" +
+            "<li>Item Gamma</li>" +
+        "</ul>" +
+    "</main>" +
+"</div>"
+
+let doc = c.parse_html(html)
+
+# Tag selector
+let h1_nodes = c.query_selector_all(doc, "h1", null)
+assert_eq(h1_nodes.len(), 1)
+assert_eq(c.node_text(doc, h1_nodes[0]), "Mozhi Web")
+
+# Universal selector with class
+let cards = c.query_selector_all(doc, ".card", null)
+assert_eq(cards.len(), 2)
+
+# ID selector
+let container = c.query_selector(doc, "#container", null)
+assert(container != null)
+
+# Multi-class selector
+let feat_card = c.query_selector(doc, "article.card.featured", null)
+assert(feat_card != null)
+assert_eq(c.node_attr(doc, feat_card, "data-id"), "101")
+
+# Child combinator (>)
+let h2_children = c.query_selector_all(doc, "article.card > h2", null)
+assert_eq(h2_children.len(), 2)
+
+# Descendant combinator (space)
+let nav_links = c.query_selector_all(doc, "header a", null)
+assert_eq(nav_links.len(), 3)
+
+# Attribute existence & operators
+let ext_link = c.query_selector(doc, "a[target='_blank'][href^='https']", null)
+assert(ext_link != null)
+assert_eq(c.node_text(doc, ext_link), "GitHub")
+
+let attr_contains = c.query_selector(doc, "a[href*='github']", null)
+assert(attr_contains != null)
+
+# Selector groups (comma)
+let headings = c.query_selector_all(doc, "h1, h2", null)
+assert_eq(headings.len(), 3)
+
+# Pseudo-classes: :first-child, :last-child, :nth-child
+let first_li = c.query_selector(doc, "ul.items-list > li:first-child", null)
+assert_eq(c.node_text(doc, first_li), "Item Alpha")
+
+let last_li = c.query_selector(doc, "ul.items-list > li:last-child", null)
+assert_eq(c.node_text(doc, last_li), "Item Gamma")
+
+let second_li = c.query_selector(doc, "ul.items-list > li:nth-child(2)", null)
+assert_eq(c.node_text(doc, second_li), "Item Beta")
+
+# Pseudo-class: :not()
+let not_featured = c.query_selector_all(doc, "article.card:not(.featured)", null)
+assert_eq(not_featured.len(), 1)
+assert_eq(c.node_attr(doc, not_featured[0], "data-id"), "102")
+
+# Scoped query
+let card1_desc = c.query_selector(doc, "p.desc", cards[0])
+assert_eq(c.node_text(doc, card1_desc), "First article text.")
+
+# matches_selector
+assert(c.matches_selector(doc, cards[0], "article.featured"))
+assert(c.matches_selector(doc, cards[1], "article.featured") == false)
+
+# HTML serialization
+let badge = c.query_selector(doc, "span.badge", null)
+assert_eq(c.node_html(doc, badge), "<span class=\"badge\">Hot</span>")
+assert_eq(c.node_inner_html(doc, badge), "Hot")
+
+# ------------------------------------------------------------
+# 4. Schema Extraction, Metadata & JSON-LD
+# ------------------------------------------------------------
+echo("[4/6] Testing Schema Extraction, Metadata & JSON-LD...")
+
+let schema = {
+    "site": "h1.title",
+    "articles": {
+        "selector": "article.card",
+        "multiple": true,
+        "fields": {
+            "id": { "attribute": "data-id" },
+            "heading": "h2",
+            "snippet": "p.desc"
+        }
+    }
+}
+
+let extracted_schema = c.extract(doc, schema)
+assert_eq(extracted_schema.site, "Mozhi Web")
+assert_eq(extracted_schema.articles.len(), 2)
+assert_eq(extracted_schema.articles[0].id, "101")
+assert_eq(extracted_schema.articles[0].heading, "Featured Article")
+assert_eq(extracted_schema.articles[1].id, "102")
+
+# Metadata extraction
+let sample_meta_html = "<!DOCTYPE html><html lang='en'><head>" +
+    "<title>Metadata Test</title>" +
+    "<meta name='description' content='SEO description text'>" +
+    "<meta name='keywords' content='test, mozhi, crawler'>" +
+    "<meta property='og:title' content='OG Social Title'>" +
+    "<meta property='og:image' content='http://example.com/cover.jpg'>" +
+    "<meta name='twitter:card' content='summary_large_image'>" +
+    "<link rel='canonical' href='http://example.com/canonical'>" +
+    "</head><body><p>Body</p></body></html>"
+
+let meta = c.extract_metadata(sample_meta_html)
+assert_eq(meta.title, "Metadata Test")
+assert_eq(meta.description, "SEO description text")
+assert_eq(meta.language, "en")
+assert_eq(meta.canonical, "http://example.com/canonical")
+assert_eq(meta.og.title, "OG Social Title")
+assert_eq(meta.twitter.card, "summary_large_image")
+
+# JSON-LD extraction
+let jsonld_html = "<script type='application/ld+json'>{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"headline\": \"Test Headline\"}</script>"
+let jsonld_res = c.extract_json_ld(jsonld_html)
+assert_eq(jsonld_res.len(), 1)
+assert_eq(jsonld_res[0].headline, "Test Headline")
+
+# Table extraction
+let table_html = "<table><thead><tr><th>Name</th><th>Score</th></tr></thead><tbody><tr><td>Ada</td><td>100</td></tr><tr><td>Bob</td><td>88</td></tr></tbody></table>"
+let tables = c.extract_tables(table_html)
+assert_eq(tables.len(), 1)
+assert_eq(tables[0].headers.len(), 2)
+assert_eq(tables[0].rows.len(), 2)
+assert_eq(tables[0].rows[0][0], "Ada")
+
+# ------------------------------------------------------------
+# 5. Robots.txt, Sitemap & File Formats
+# ------------------------------------------------------------
+echo("[5/6] Testing Robots.txt, Sitemap & Exports...")
+
+let robots_txt = "User-agent: *\nDisallow: /admin/\nAllow: /admin/public/\nDisallow: /secret\nSitemap: http://example.com/sitemap.xml\n"
+let robots = c.parse_robots_txt(robots_txt, "MozhiCrawler")
+assert_eq(robots.sitemaps.len(), 1)
+assert_eq(robots.sitemaps[0], "http://example.com/sitemap.xml")
+assert(c.is_robots_allowed(robots, "/", "MozhiCrawler"))
+assert(c.is_robots_allowed(robots, "/admin/dashboard", "MozhiCrawler") == false)
+assert(c.is_robots_allowed(robots, "/admin/public/page", "MozhiCrawler"))
+assert(c.is_robots_allowed(robots, "/secret", "MozhiCrawler") == false)
+
+let sitemap_xml = "<?xml version=\"1.0\"?><urlset><url><loc>http://example.com/p1</loc></url><url><loc>http://example.com/p2</loc></url></urlset>"
+let sitemap_urls = c.parse_sitemap(sitemap_xml)
+assert_eq(sitemap_urls.len(), 2)
+assert_eq(sitemap_urls[0], "http://example.com/p1")
+
+# CSV & JSON exports
+assert_eq(c.escape_csv_val("Simple"), "Simple")
+assert_eq(c.escape_csv_val("With, comma"), "\"With, comma\"")
+assert_eq(c.escape_csv_val("With \"quote\""), "\"With \"\"quote\"\"\"")
+
+c.export_json({ "test": 123 }, "test_export.json")
+c.export_jsonl([ { "id": 1 }, { "id": 2 } ], "test_export.jsonl")
+c.export_csv(["id", "name"], [ { "id": 1, "name": "Mozhi" } ], "test_export.csv")
+
+# ------------------------------------------------------------
+# 6. Backward Compatibility for Legacy APIs
+# ------------------------------------------------------------
+echo("[6/6] Testing Backward Compatibility for Legacy APIs...")
+
 assert_eq(c.get_file_extension("http://site.com/file.pdf"), "PDF")
 assert_eq(c.get_file_extension("http://site.com/archive.tar.gz"), "GZ")
 assert_eq(c.get_file_extension("http://site.com/image.png?v=1"), "PNG")
 assert_eq(c.get_file_extension("http://site.com/video.mp4#t=5"), "MP4")
 
-# 5. Asset classifiers
 assert(c.is_image_ext("PNG"))
 assert(c.is_image_ext("WEBP"))
 assert(c.is_video_ext("MP4"))
 assert(c.is_document_file_ext("PDF"))
 assert(c.is_document_file_ext("ZIP"))
 
-# 6. HTML Extraction test
-let sample_html = "<html><head><title>Test Page</title><meta name=\"description\" content=\"A test description\"></head><body><h1>Main Title</h1><p>First paragraph.</p><img src=\"/img/logo.png\" alt=\"Logo\"><a href=\"/subpage.html\">Next</a><a href=\"/report.pdf\">Report</a></body></html>"
-let extracted = c.extract_page_data("http://test.com/", sample_html)
+let legacy_html = "<html><head><title>Test Page</title><meta name=\"description\" content=\"A test description\"></head><body><h1>Main Title</h1><p>First paragraph.</p><img src=\"/img/logo.png\" alt=\"Logo\"><a href=\"/subpage.html\">Next</a><a href=\"/report.pdf\">Report</a></body></html>"
+let legacy_data = c.extract_page_data("http://test.com/", legacy_html)
 
-assert_eq(extracted.txt.title, "Test Page")
-assert_eq(extracted.txt.meta_description, "A test description")
-assert_eq(extracted.txt.h1.len(), 1)
-assert_eq(extracted.txt.paragraphs.len(), 1)
-assert_eq(extracted.img.len(), 1)
-assert_eq(extracted.img[0].url, "http://test.com/img/logo.png")
-assert_eq(extracted.files.len(), 1)
-assert_eq(extracted.files[0].url, "http://test.com/report.pdf")
-assert_eq(extracted.links.internal.len(), 1)
-assert_eq(extracted.links.internal[0].url, "http://test.com/subpage.html")
+assert_eq(legacy_data.txt.title, "Test Page")
+assert_eq(legacy_data.txt.meta_description, "A test description")
+assert_eq(legacy_data.txt.h1.len(), 1)
+assert_eq(legacy_data.txt.paragraphs.len(), 1)
+assert_eq(legacy_data.img.len(), 1)
+assert_eq(legacy_data.img[0].url, "http://test.com/img/logo.png")
+assert_eq(legacy_data.files.len(), 1)
+assert_eq(legacy_data.files[0].url, "http://test.com/report.pdf")
+assert_eq(legacy_data.links.internal.len(), 1)
+assert_eq(legacy_data.links.internal[0].url, "http://test.com/subpage.html")
 
-echo("tests/crawler: all assertions passed successfully")
+echo("tests/crawler: ALL SUITES PASSED (6/6)")
