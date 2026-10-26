@@ -240,7 +240,7 @@ app.get("/products", fn(req, res) {
 
 # Model catalog for BlockRun
 app.get("/blockrun/v1/models", fn(req, res) {
-    let raw = fs.read("/home/user/blockrun_compact.json")
+    let raw = fs.read("tests/fixtures/blockrun_catalog.json")
     let catalog = json.parse(raw)
     return res.json(catalog)
 })

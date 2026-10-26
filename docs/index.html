@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
-  <title>Mozhi Crawler & Multi-Agent LLM Research Engine — v1.3.0</title>
+  <title>Mozhi Crawler & Multi-Agent LLM Research Engine — v1.3.1</title>
   <meta name="description" content="Complete Multi-Agent LLM Research Engine, Web Spider, DOM Parser, Persistent Cache, and Link Graph in 100% Pure Mozhi.">
   <style>
     :root {
@@ -762,7 +762,7 @@
       <div class="hero-badge-row">
         <div class="hero-badge">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 16h2v2h-2zm0-6h2v4h-2z"/></svg>
-          Release v1.3.0 · 100% Native Pure Mozhi
+          Release v1.3.1 · 100% Native Pure Mozhi
         </div>
         <div class="hero-badge" style="background: rgba(124, 77, 255, 0.35);">
           Mobile & Desktop Responsive · Interactive AI Helper
@@ -814,7 +814,7 @@
             <div class="msg-avatar bot">AI</div>
             <div class="msg-bubble">
               👋 <strong>Hello! I am your Mozhi Crawler Docs Helper.</strong><br>
-              I read the complete v1.3.0 documentation to answer your questions about web crawling, spidering, and multi-agent LLM research.<br>
+              I read the complete v1.3.1 documentation to answer your questions about web crawling, spidering, and multi-agent LLM research.<br>
               Tap any prompt below or type your question!
             </div>
           </div>
@@ -1161,7 +1161,7 @@ crawler.export_graph_csv(crawl_result, "graph.csv")</pre>
     <section id="api" class="section-card">
       <h2>
         <svg width="28" height="28" viewBox="0 0 24 24" fill="var(--md-primary)"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/></svg>
-        Complete Public API Reference (v1.3.0)
+        Complete Public API Reference (v1.3.1)
       </h2>
       <p>All 28 functions are exported by <code>@crossberry-in/mozhi-crawler</code> and ready to import directly.</p>
 
@@ -1312,7 +1312,7 @@ crawler.export_graph_csv(crawl_result, "graph.csv")</pre>
       {
         role: "system",
         content: `You are the official Mozhi Crawler Documentation Assistant.
-You have read the entire mozhi-crawler v1.3.0 documentation:
+You have read the entire mozhi-crawler v1.3.1 documentation:
 - 100% pure Mozhi (Mz) package with zero external dependencies.
 - Multi-Agent Research Engine with 6 specialized agents: Query Planner, Link Discovery, Web Collector, Evidence Extraction, Verification, and Synthesis.
 - Configurable LLM Provider Management: BlockRun (https://blockrun.ai/api/v1) by default, OpenAI-compatible format, custom private endpoints.
@@ -1503,7 +1503,7 @@ If the query or pages have not been crawled previously, it returns \`ERR_OFFLINE
       removeTypingIndicator(typingId);
       let fallbackText = localAnswer;
       if (!fallbackText) {
-        fallbackText = "Based on the Mozhi Crawler v1.3.0 documentation: Mozhi Crawler provides a complete multi-agent LLM research engine, web spider, CSS selector engine, and persistent storage. All features are built 100% in pure Mozhi with SSRF security and zero external dependencies.\n\nYou can configure providers with `crawler.init_provider_manager()` and run research queries with `crawler.research()`.";
+        fallbackText = "Based on the Mozhi Crawler v1.3.1 documentation: Mozhi Crawler provides a complete multi-agent LLM research engine, web spider, CSS selector engine, and persistent storage. All features are built 100% in pure Mozhi with SSRF security and zero external dependencies.\n\nYou can configure providers with `crawler.init_provider_manager()` and run research queries with `crawler.research()`.";
       }
 
       conversationHistory.push({ role: "assistant", content: fallbackText });
@@ -1547,7 +1547,7 @@ If the query or pages have not been crawled previously, it returns \`ERR_OFFLINE
           <div class="chat-msg assistant">
             <div class="msg-avatar bot">AI</div>
             <div class="msg-bubble">
-              Chat cleared. Ask anything about Mozhi Crawler v1.3.0!
+              Chat cleared. Ask anything about Mozhi Crawler v1.3.1!
             </div>
           </div>
         `;
