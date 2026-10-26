@@ -1,0 +1,59 @@
+name: Release
+
+# Automatic package release: pushing a tag like v1.0.0 builds
+# crawler.mz.pkg.zip and attaches it to a GitHub release.
+# 'mz install @<owner>/<repo>' downloads exactly this asset.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read package metadata
+        id: meta
+        run: |
+          NAME=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' package.toml | head -1)
+          VERSION=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' package.toml | head -1)
+          if [ -z "$NAME" ] || [ -z "$VERSION" ]; then
+            echo "package.toml must define name and version" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME#v}" != "$VERSION" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package.toml version $VERSION" >&2
+            exit 1
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify package structure
+        run: |
+          test -f package.toml
+          test -f src/mod.mz
+          echo "package structure OK: ${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}"
+
+      - name: Build crawler.mz.pkg.zip
+        run: |
+          # git archive respects .gitattributes export-ignore, so .github/
+          # never lands in the package zip. The zip contains a single
+          # top-level directory named after the package.
+          git archive --format=zip --prefix="${{ steps.meta.outputs.name }}/" \
+            -o "${{ steps.meta.outputs.name }}.mz.pkg.zip" HEAD
+          unzip -l "${{ steps.meta.outputs.name }}.mz.pkg.zip"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            "${{ steps.meta.outputs.name }}.mz.pkg.zip" \
+            --repo "${{ github.repository }}" \
+            --title "${{ steps.meta.outputs.name }} ${{ github.ref_name }}" \
+            --generate-notes

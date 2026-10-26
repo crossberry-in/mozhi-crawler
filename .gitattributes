@@ -1,0 +1,2 @@
+# keep CI configuration out of release zips
+.github export-ignore

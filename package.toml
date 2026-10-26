@@ -1,0 +1,21 @@
+# crawler — Mozhi package manifest
+[package]
+name = "crawler"
+version = "1.0.0"
+description = "Web crawler & categorized asset extractor (img, video, files, txt, links) for Mozhi"
+license = "MIT"
+category = "web"
+edition = "2024"
+
+[module]
+# File loaded by the interpreter for 'import crawler'
+entry = "src/mod.mz"
+mod = "Crawler: scrape, crawl, extract, parse_url, resolve_url"
+
+[exports]
+scrape = "mod.scrape"
+crawl = "mod.crawl"
+parse_url = "mod.parse_url"
+resolve_url = "mod.resolve_url"
+extract_page_data = "mod.extract_page_data"
+print_tables = "mod.print_tables"

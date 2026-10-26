@@ -1,0 +1,61 @@
+# ============================================================
+# Crawler package tests — run with: mozhi test tests/
+# ============================================================
+
+import c from "../src/mod.mz"
+
+echo("Running crawler package tests...")
+
+# 1. URL Parser tests
+let p1 = c.parse_url("http://example.com/path/to/page.html")
+assert_eq(p1.valid, true)
+assert_eq(p1.protocol, "http")
+assert_eq(p1.host, "example.com")
+assert_eq(p1.path, "/path/to/page.html")
+
+let p2 = c.parse_url("https://sub.domain.org:8080/test#section")
+assert_eq(p2.valid, true)
+assert_eq(p2.protocol, "https")
+assert_eq(p2.host, "sub.domain.org:8080")
+assert_eq(p2.path, "/test")
+
+# 2. Same host checks
+assert(c.same_host("http://example.com/a", "http://example.com/b"))
+assert(c.same_host("http://example.com/a", "http://other.com/b") == false)
+
+# 3. Relative URL resolution
+assert_eq(c.resolve_url("http://site.com/docs/", "guide.html"), "http://site.com/docs/guide.html")
+assert_eq(c.resolve_url("http://site.com/docs/index.html", "/about"), "http://site.com/about")
+assert_eq(c.resolve_url("http://site.com/", "http://other.com/"), "http://other.com/")
+assert_null(c.resolve_url("http://site.com/", "javascript:void(0)"))
+assert_null(c.resolve_url("http://site.com/", "mailto:test@example.com"))
+
+# 4. File extension detection
+assert_eq(c.get_file_extension("http://site.com/file.pdf"), "PDF")
+assert_eq(c.get_file_extension("http://site.com/archive.tar.gz"), "GZ")
+assert_eq(c.get_file_extension("http://site.com/image.png?v=1"), "PNG")
+assert_eq(c.get_file_extension("http://site.com/video.mp4#t=5"), "MP4")
+
+# 5. Asset classifiers
+assert(c.is_image_ext("PNG"))
+assert(c.is_image_ext("WEBP"))
+assert(c.is_video_ext("MP4"))
+assert(c.is_document_file_ext("PDF"))
+assert(c.is_document_file_ext("ZIP"))
+
+# 6. HTML Extraction test
+let sample_html = "<html><head><title>Test Page</title><meta name=\"description\" content=\"A test description\"></head><body><h1>Main Title</h1><p>First paragraph.</p><img src=\"/img/logo.png\" alt=\"Logo\"><a href=\"/subpage.html\">Next</a><a href=\"/report.pdf\">Report</a></body></html>"
+let extracted = c.extract_page_data("http://test.com/", sample_html)
+
+assert_eq(extracted.txt.title, "Test Page")
+assert_eq(extracted.txt.meta_description, "A test description")
+assert_eq(extracted.txt.h1.len(), 1)
+assert_eq(extracted.txt.paragraphs.len(), 1)
+assert_eq(extracted.img.len(), 1)
+assert_eq(extracted.img[0].url, "http://test.com/img/logo.png")
+assert_eq(extracted.files.len(), 1)
+assert_eq(extracted.files[0].url, "http://test.com/report.pdf")
+assert_eq(extracted.links.internal.len(), 1)
+assert_eq(extracted.links.internal[0].url, "http://test.com/subpage.html")
+
+echo("tests/crawler: all assertions passed successfully")

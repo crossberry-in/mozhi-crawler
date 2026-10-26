@@ -1,0 +1,29 @@
+# ============================================================
+# Mozhi Crawler Example — run with: mozhi run examples/demo.mz
+# ============================================================
+
+import crawler from "../src/mod.mz"
+
+echo("=== Mozhi Crawler Demo ===")
+
+# Test URL parsing
+let parsed = crawler.parse_url("http://example.com/blog/article1.html")
+echo("Host: " + parsed.host)
+echo("Path: " + parsed.path)
+
+# Test URL resolution
+let resolved = crawler.resolve_url("http://example.com/blog/", "article2.html")
+echo("Resolved: " + resolved)
+
+# Test Scraping a Page
+let data = crawler.scrape("http://127.0.0.1:8089/media-showcase")
+if data != null {
+    echo("Scraped Title:   " + data.txt.title)
+    echo("Images Found:    " + string(data.img.len()))
+    echo("Videos Found:    " + string(data.video.len()))
+    echo("Files Found:     " + string(data.files.len()))
+    echo("Internal Links:  " + string(data.links.internal.len()))
+    echo("External Links:  " + string(data.links.external.len()))
+}
+
+echo("=== Demo Finished Successfully ===")

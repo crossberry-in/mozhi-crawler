@@ -1,0 +1,762 @@
+# ============================================================
+# crawler — Web crawler & media extractor for Mozhi (v1.0.0)
+# Zero database dependencies; 100% native Mozhi stdlib
+# ============================================================
+
+import http
+import json
+
+# ------------------------------------------------------------
+# URL Utilities
+# ------------------------------------------------------------
+
+fn clean_fragment(url) {
+    if url == null {
+        return ""
+    }
+    let hash_idx = index(url, "#")
+    if hash_idx != -1 {
+        return url.slice(0, hash_idx)
+    }
+    return url
+}
+
+fn parse_url(raw_url) {
+    let result = {
+        valid: false,
+        protocol: "",
+        host: "",
+        path: "/",
+        full: ""
+    }
+    if raw_url == null {
+        return result
+    }
+
+    let url = clean_fragment(raw_url).trim()
+    let proto = ""
+    let rest = ""
+
+    if url.starts_with("http://") {
+        proto = "http"
+        rest = url.slice(7, url.len())
+    } else if url.starts_with("https://") {
+        proto = "https"
+        rest = url.slice(8, url.len())
+    } else {
+        return result
+    }
+
+    result.protocol = proto
+    let slash_idx = index(rest, "/")
+
+    if slash_idx == -1 {
+        result.host = rest
+        result.path = "/"
+    } else {
+        result.host = rest.slice(0, slash_idx)
+        result.path = rest.slice(slash_idx, rest.len())
+    }
+
+    result.valid = true
+    result.full = proto + "://" + result.host + result.path
+    return result
+}
+
+fn same_host(url1, url2) {
+    if url1 == null {
+        return false
+    }
+    if url2 == null {
+        return false
+    }
+    let p1 = parse_url(url1)
+    let p2 = parse_url(url2)
+    if p1.valid == false {
+        return false
+    }
+    if p2.valid == false {
+        return false
+    }
+    return p1.host.lower() == p2.host.lower()
+}
+
+fn resolve_url(base_url, href) {
+    if href == null {
+        return null
+    }
+    let trimmed = clean_fragment(href).trim()
+    if trimmed.len() == 0 {
+        return null
+    }
+
+    if trimmed.starts_with("#") or
+       trimmed.starts_with("javascript:") or
+       trimmed.starts_with("mailto:") or
+       trimmed.starts_with("tel:") or
+       trimmed.starts_with("data:") {
+        return null
+    }
+
+    if trimmed.starts_with("http://") or trimmed.starts_with("https://") {
+        let p = parse_url(trimmed)
+        if p.valid {
+            return p.full
+        }
+        return null
+    }
+
+    let base = parse_url(base_url)
+    if base.valid == false {
+        return null
+    }
+
+    if trimmed.starts_with("//") {
+        return base.protocol + ":" + trimmed
+    }
+
+    if trimmed.starts_with("/") {
+        let p = parse_url(base.protocol + "://" + base.host + trimmed)
+        return p.full
+    }
+
+    let dir = "/"
+    if base.path.ends_with("/") {
+        dir = base.path
+    } else {
+        let last_slash = -1
+        let i = 0
+        while i < base.path.len() {
+            if base.path.slice(i, i + 1) == "/" {
+                last_slash = i
+            }
+            i = i + 1
+        }
+        if last_slash >= 0 {
+            dir = base.path.slice(0, last_slash + 1)
+        }
+    }
+
+    let combined = base.protocol + "://" + base.host + dir + trimmed
+    let p = parse_url(combined)
+    return p.full
+}
+
+fn get_file_extension(url) {
+    if url == null {
+        return ""
+    }
+    let clean = clean_fragment(url)
+    let q_idx = index(clean, "?")
+    if q_idx != -1 {
+        clean = clean.slice(0, q_idx)
+    }
+
+    let last_dot = -1
+    let i = 0
+    while i < clean.len() {
+        if clean.slice(i, i + 1) == "." {
+            last_dot = i
+        }
+        i = i + 1
+    }
+
+    if last_dot != -1 {
+        let ext = clean.slice(last_dot + 1, clean.len())
+        if ext.len() >= 1 and ext.len() <= 6 {
+            return ext.upper()
+        }
+    }
+    return ""
+}
+
+# ------------------------------------------------------------
+# HTML Attribute & Tag Parsing
+# ------------------------------------------------------------
+
+fn get_attr(tag_str, attr_name) {
+    if tag_str == null {
+        return ""
+    }
+    let lower = tag_str.lower()
+    let marker = attr_name.lower() + "="
+    let pos = index(lower, marker)
+    if pos == -1 {
+        return ""
+    }
+
+    let val_start = pos + marker.len()
+    if val_start >= tag_str.len() {
+        return ""
+    }
+
+    let quote = tag_str.slice(val_start, val_start + 1)
+    if quote == "\"" or quote == "'" {
+        let end_quote = index(tag_str.slice(val_start + 1, tag_str.len()), quote)
+        if end_quote != -1 {
+            return tag_str.slice(val_start + 1, val_start + 1 + end_quote).trim()
+        }
+    } else {
+        let space_idx = index(tag_str.slice(val_start, tag_str.len()), " ")
+        let gt_idx = index(tag_str.slice(val_start, tag_str.len()), ">")
+        let end_idx = -1
+        if space_idx != -1 and gt_idx != -1 {
+            if space_idx < gt_idx {
+                end_idx = space_idx
+            } else {
+                end_idx = gt_idx
+            }
+        } else if space_idx != -1 {
+            end_idx = space_idx
+        } else if gt_idx != -1 {
+            end_idx = gt_idx
+        }
+        if end_idx != -1 {
+            return tag_str.slice(val_start, val_start + end_idx).trim()
+        }
+    }
+    return ""
+}
+
+fn strip_tags(raw) {
+    if raw == null {
+        return ""
+    }
+    let clean = ""
+    let inside = false
+    let i = 0
+    let n = raw.len()
+    while i < n {
+        let ch = raw.slice(i, i + 1)
+        if ch == "<" {
+            inside = true
+        } else if ch == ">" {
+            inside = false
+        } else if inside == false {
+            clean = clean + ch
+        }
+        i = i + 1
+    }
+    return clean.trim()
+}
+
+fn sanitize_text(s) {
+    if s == null {
+        return ""
+    }
+    let clean = ""
+    let prev_space = false
+    let i = 0
+    let n = s.len()
+    while i < n {
+        let ch = s.slice(i, i + 1)
+        if ch == "\n" or ch == "\r" or ch == "\t" or ch == " " {
+            if prev_space == false {
+                clean = clean + " "
+                prev_space = true
+            }
+        } else {
+            clean = clean + ch
+            prev_space = false
+        }
+        i = i + 1
+    }
+    return clean.trim()
+}
+
+fn find_all_tags(html, tag_name) {
+    let results = []
+    let lower = html.lower()
+    let marker = "<" + tag_name.lower()
+    let cursor = 0
+    let total_len = html.len()
+
+    while cursor < total_len {
+        let remaining = lower.slice(cursor, total_len)
+        let pos = index(remaining, marker)
+        if pos == -1 {
+            break
+        }
+
+        let tag_start = cursor + pos
+        let next_char_idx = tag_start + marker.len()
+        let is_valid = false
+        if next_char_idx < total_len {
+            let ch = lower.slice(next_char_idx, next_char_idx + 1)
+            if ch == " " or ch == ">" or ch == "/" or ch == "\n" or ch == "\t" or ch == "\r" {
+                is_valid = true
+            }
+        }
+
+        if is_valid {
+            let gt_pos = index(lower.slice(tag_start, total_len), ">")
+            if gt_pos != -1 {
+                let full_tag = html.slice(tag_start, tag_start + gt_pos + 1)
+                results.push(full_tag)
+                cursor = tag_start + gt_pos + 1
+            } else {
+                cursor = tag_start + marker.len()
+            }
+        } else {
+            cursor = tag_start + marker.len()
+        }
+    }
+    return results
+}
+
+fn find_paired_elements(html, tag_name) {
+    let results = []
+    let lower = html.lower()
+    let open_marker = "<" + tag_name.lower()
+    let close_marker = "</" + tag_name.lower() + ">"
+    let cursor = 0
+    let total_len = html.len()
+
+    while cursor < total_len {
+        let remaining = lower.slice(cursor, total_len)
+        let open_rel = index(remaining, open_marker)
+        if open_rel == -1 {
+            break
+        }
+
+        let start_pos = cursor + open_rel
+        let next_char_idx = start_pos + open_marker.len()
+        let is_valid = false
+        if next_char_idx < total_len {
+            let ch = lower.slice(next_char_idx, next_char_idx + 1)
+            if ch == " " or ch == ">" or ch == "/" or ch == "\n" or ch == "\t" or ch == "\r" {
+                is_valid = true
+            }
+        }
+
+        if is_valid {
+            let gt_rel = index(lower.slice(start_pos, total_len), ">")
+            if gt_rel != -1 {
+                let open_tag = html.slice(start_pos, start_pos + gt_rel + 1)
+                let content_start = start_pos + gt_rel + 1
+                let close_rel = index(lower.slice(content_start, total_len), close_marker)
+                if close_rel != -1 {
+                    let inner_raw = html.slice(content_start, content_start + close_rel)
+                    results.push({
+                        tag: open_tag,
+                        inner: sanitize_text(strip_tags(inner_raw))
+                    })
+                    cursor = content_start + close_rel + close_marker.len()
+                } else {
+                    cursor = content_start
+                }
+            } else {
+                cursor = start_pos + open_marker.len()
+            }
+        } else {
+            cursor = start_pos + open_marker.len()
+        }
+    }
+    return results
+}
+
+# ------------------------------------------------------------
+# Classifiers
+# ------------------------------------------------------------
+
+fn is_image_ext(ext) {
+    let list = ["PNG", "JPG", "JPEG", "GIF", "WEBP", "SVG", "ICO", "BMP", "AVIF", "TIFF"]
+    for e in list {
+        if ext == e {
+            return true
+        }
+    }
+    return false
+}
+
+fn is_video_ext(ext) {
+    let list = ["MP4", "WEBM", "OGV", "MOV", "M4V", "AVI", "MKV", "FLV", "WMV", "MP3", "WAV", "OGG", "FLAC", "AAC", "M4A"]
+    for e in list {
+        if ext == e {
+            return true
+        }
+    }
+    return false
+}
+
+fn is_document_file_ext(ext) {
+    let list = ["PDF", "ZIP", "TAR", "GZ", "RAR", "7Z", "DOC", "DOCX", "XLS", "XLSX", "PPT", "PPTX", "CSV", "TSV", "TXT", "RTF", "EPUB", "ISO", "JSON", "XML"]
+    for e in list {
+        if ext == e {
+            return true
+        }
+    }
+    return false
+}
+
+# ------------------------------------------------------------
+# Category Extraction
+# ------------------------------------------------------------
+
+fn extract_page_data(current_url, html) {
+    let page_title = ""
+    let title_tags = find_paired_elements(html, "title")
+    if title_tags.len() > 0 {
+        page_title = title_tags[0].inner
+    }
+
+    let meta_desc = ""
+    let meta_keywords = ""
+    let meta_author = ""
+    let og_title = ""
+    let og_image = ""
+    let og_desc = ""
+    let meta_tags = find_all_tags(html, "meta")
+
+    for m in meta_tags {
+        let name = get_attr(m, "name").lower()
+        let prop = get_attr(m, "property").lower()
+        let content = sanitize_text(get_attr(m, "content"))
+
+        if name == "description" {
+            meta_desc = content
+        } else if name == "keywords" {
+            meta_keywords = content
+        } else if name == "author" {
+            meta_author = content
+        }
+
+        if prop == "og:title" {
+            og_title = content
+        } else if prop == "og:image" {
+            og_image = content
+        } else if prop == "og:description" {
+            og_desc = content
+        }
+    }
+
+    let h1_list = find_paired_elements(html, "h1")
+    let h2_list = find_paired_elements(html, "h2")
+    let h3_list = find_paired_elements(html, "h3")
+    let p_list = find_paired_elements(html, "p")
+
+    # Images
+    let img_items = []
+    let seen_imgs = {}
+    let img_tags = find_all_tags(html, "img")
+
+    for tag in img_tags {
+        let src = get_attr(tag, "src")
+        if src.len() > 0 {
+            let abs_src = resolve_url(current_url, src)
+            if abs_src != null {
+                if seen_imgs.has(abs_src) == false {
+                    seen_imgs[abs_src] = true
+                    let alt = sanitize_text(get_attr(tag, "alt"))
+                    let w = get_attr(tag, "width")
+                    let h = get_attr(tag, "height")
+                    let ext = get_file_extension(abs_src)
+                    if ext.len() == 0 {
+                        ext = "IMG"
+                    }
+
+                    let dim = ""
+                    if w.len() > 0 and h.len() > 0 {
+                        dim = w + "x" + h
+                    } else if w.len() > 0 {
+                        dim = w + "w"
+                    }
+
+                    img_items.push({
+                        url: abs_src,
+                        alt: alt,
+                        format: ext,
+                        dimensions: dim
+                    })
+                }
+            }
+        }
+    }
+
+    # Videos & Media
+    let video_items = []
+    let seen_videos = {}
+
+    let video_tags = find_all_tags(html, "video")
+    for v in video_tags {
+        let src = get_attr(v, "src")
+        if src.len() > 0 {
+            let abs_src = resolve_url(current_url, src)
+            if abs_src != null {
+                if seen_videos.has(abs_src) == false {
+                    seen_videos[abs_src] = true
+                    video_items.push({
+                        type: "VIDEO TAG",
+                        url: abs_src,
+                        format: get_file_extension(abs_src)
+                    })
+                }
+            }
+        }
+    }
+
+    let source_tags = find_all_tags(html, "source")
+    for s in source_tags {
+        let src = get_attr(s, "src")
+        let mime = get_attr(s, "type")
+        if src.len() > 0 {
+            let abs_src = resolve_url(current_url, src)
+            if abs_src != null {
+                if seen_videos.has(abs_src) == false {
+                    seen_videos[abs_src] = true
+                    let vtype = "SOURCE"
+                    if mime.len() > 0 {
+                        vtype = mime
+                    }
+                    video_items.push({
+                        type: vtype,
+                        url: abs_src,
+                        format: get_file_extension(abs_src)
+                    })
+                }
+            }
+        }
+    }
+
+    let iframe_tags = find_all_tags(html, "iframe")
+    for ifr in iframe_tags {
+        let src = get_attr(ifr, "src")
+        if src.len() > 0 {
+            let lower_src = src.lower()
+            if lower_src.contains("youtube") or lower_src.contains("youtu.be") or lower_src.contains("vimeo") or lower_src.contains("player") or lower_src.contains("embed") {
+                let abs_src = resolve_url(current_url, src)
+                if abs_src == null {
+                    abs_src = src
+                }
+                if seen_videos.has(abs_src) == false {
+                    seen_videos[abs_src] = true
+                    video_items.push({
+                        type: "VIDEO EMBED",
+                        url: abs_src,
+                        format: "EMBED"
+                    })
+                }
+            }
+        }
+    }
+
+    # Files & Links
+    let file_items = []
+    let internal_links = []
+    let external_links = []
+    let crawlable_links = []
+    let seen_links = {}
+
+    let a_elements = find_paired_elements(html, "a")
+    for a in a_elements {
+        let href = get_attr(a.tag, "href")
+        let label = sanitize_text(a.inner)
+        if href.len() > 0 {
+            let resolved = resolve_url(current_url, href)
+            if resolved != null {
+                if seen_links.has(resolved) == false {
+                    seen_links[resolved] = true
+                    let ext = get_file_extension(resolved)
+
+                    if is_video_ext(ext) {
+                        if seen_videos.has(resolved) == false {
+                            seen_videos[resolved] = true
+                            video_items.push({
+                                type: "MEDIA LINK (" + ext + ")",
+                                url: resolved,
+                                format: ext
+                            })
+                        }
+                    } else if is_document_file_ext(ext) {
+                        file_items.push({
+                            format: ext,
+                            label: label,
+                            url: resolved
+                        })
+                    } else {
+                        let is_internal = same_host(resolved, current_url)
+                        let link_obj = {
+                            label: label,
+                            url: resolved
+                        }
+                        if is_internal {
+                            internal_links.push(link_obj)
+                            crawlable_links.push(resolved)
+                        } else {
+                            external_links.push(link_obj)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # Resources (more data)
+    let resource_items = []
+    let link_tags = find_all_tags(html, "link")
+    for lt in link_tags {
+        let rel = get_attr(lt, "rel").lower()
+        let href = get_attr(lt, "href")
+        if href.len() > 0 {
+            let abs_href = resolve_url(current_url, href)
+            if abs_href != null {
+                if rel.contains("stylesheet") {
+                    resource_items.push({
+                        kind: "CSS STYLESHEET",
+                        url: abs_href
+                    })
+                } else if rel.contains("icon") {
+                    resource_items.push({
+                        kind: "FAVICON",
+                        url: abs_href
+                    })
+                } else if rel.contains("canonical") {
+                    resource_items.push({
+                        kind: "CANONICAL",
+                        url: abs_href
+                    })
+                }
+            }
+        }
+    }
+
+    let script_tags = find_all_tags(html, "script")
+    for st in script_tags {
+        let src = get_attr(st, "src")
+        if src.len() > 0 {
+            let abs_src = resolve_url(current_url, src)
+            if abs_src != null {
+                resource_items.push({
+                    kind: "JAVASCRIPT",
+                    url: abs_src
+                })
+            }
+        }
+    }
+
+    return {
+        url: current_url,
+        txt: {
+            title: page_title,
+            meta_description: meta_desc,
+            meta_keywords: meta_keywords,
+            meta_author: meta_author,
+            open_graph: {
+                title: og_title,
+                image: og_image,
+                description: og_desc
+            },
+            h1: h1_list,
+            h2: h2_list,
+            h3: h3_list,
+            paragraphs: p_list
+        },
+        img: img_items,
+        video: video_items,
+        files: file_items,
+        links: {
+            internal: internal_links,
+            external: external_links
+        },
+        crawlable_links: crawlable_links,
+        more_data: resource_items
+    }
+}
+
+# ------------------------------------------------------------
+# Scrape & Crawl High-Level Functions
+# ------------------------------------------------------------
+
+fn scrape(target_url) {
+    let req_url = target_url
+    if req_url.starts_with("https://") {
+        req_url = "http://" + req_url.slice(8, req_url.len())
+    }
+
+    let res = http.get(req_url)
+    if res == null {
+        return null
+    }
+
+    if res.status == 301 or res.status == 302 {
+        let loc = res.headers["location"]
+        if loc != null {
+            if loc.starts_with("http://") {
+                res = http.get(loc)
+            }
+        }
+    }
+
+    if res.status >= 200 and res.status < 300 {
+        return extract_page_data(target_url, res.body)
+    }
+    return null
+}
+
+fn crawl(opts) {
+    let seed_url = opts.url
+    let max_pages = 5
+    if opts.max_pages != null {
+        max_pages = opts.max_pages
+    }
+    let max_depth = 2
+    if opts.max_depth != null {
+        max_depth = opts.max_depth
+    }
+    let same_domain = true
+    if opts.same_domain != null {
+        same_domain = opts.same_domain
+    }
+
+    let parsed_seed = parse_url(seed_url)
+    if parsed_seed.valid == false {
+        return null
+    }
+
+    let queue = []
+    let visited = {}
+    let pages = []
+
+    queue.push({ url: parsed_seed.full, depth: 0 })
+    visited[parsed_seed.full] = true
+
+    let head = 0
+    let count = 0
+
+    while head < queue.len() and count < max_pages {
+        let item = queue[head]
+        head = head + 1
+        count = count + 1
+
+        let data = scrape(item.url)
+        if data != null {
+            pages.push(data)
+
+            if item.depth < max_depth {
+                for next_link in data.crawlable_links {
+                    let allow = true
+                    if same_domain {
+                        if same_host(next_link, seed_url) == false {
+                            allow = false
+                        }
+                    }
+                    if allow {
+                        if visited.has(next_link) == false {
+                            visited[next_link] = true
+                            queue.push({
+                                url: next_link,
+                                depth: item.depth + 1
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return {
+        seed_url: seed_url,
+        total_pages: pages.len(),
+        pages: pages
+    }
+}
